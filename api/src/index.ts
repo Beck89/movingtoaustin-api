@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import searchRouter from './routes/search.js';
 import detailRouter from './routes/detail.js';
 import suggestRouter from './routes/suggest.js';
+import statusRouter from './routes/status.js';
 
 dotenv.config();
 
@@ -26,6 +27,7 @@ app.get('/health', (_req, res) => {
 app.use('/listings/search', searchRouter);
 app.use('/listings', detailRouter);
 app.use('/suggest', suggestRouter);
+app.use('/status', statusRouter);
 
 // Error handler
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
