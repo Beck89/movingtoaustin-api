@@ -224,10 +224,14 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
         const s3Configured = process.env.S3_ENDPOINT && process.env.S3_BUCKET &&
             process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY;
 
-        if (item.MediaURL && item.MediaCategory === 'Photo' && s3Configured) {
+        // Download if URL exists and it's a photo (or category is null but URL looks like an image)
+        const isPhoto = item.MediaCategory === 'Photo' ||
+            (!item.MediaCategory && item.MediaURL && /\.(jpg|jpeg|png|gif|webp)$/i.test(item.MediaURL));
+
+        if (item.MediaURL && isPhoto && s3Configured) {
             mediaQueue.add(() =>
                 pRetry(
-                    () => downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory!),
+                    () => downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo'),
                     { retries: 3 }
                 ).then(async (localUrl) => {
                     await pool.query(
@@ -288,11 +292,24 @@ async function configureMeilisearchIndex(): Promise<void> {
     try {
         const index = searchClient.index(INDEX_NAME);
 
-        // Check if index needs configuration
-        const settings = await index.getSettings();
+        // Try to get settings - if index doesn't exist, create it first
+        let settings;
+        try {
+            settings = await index.getSettings();
+        } catch (error: any) {
+            if (error.code === 'index_not_found') {
+                console.log('  - Index does not exist, creating it...');
+                // Create index by adding an empty document (Meilisearch creates index automatically)
+                await searchClient.createIndex(INDEX_NAME, { primaryKey: 'id' });
+                console.log('  - Index created successfully');
+                settings = null; // Force configuration
+            } else {
+                throw error;
+            }
+        }
 
         // Only configure if filterableAttributes is empty (not yet configured)
-        if (!settings.filterableAttributes || settings.filterableAttributes.length === 0) {
+        if (!settings || !settings.filterableAttributes || settings.filterableAttributes.length === 0) {
             console.log('  - Setting filterable attributes...');
             await index.updateFilterableAttributes([
                 'mlg_can_view',
@@ -395,6 +412,12 @@ async function syncProperties(): Promise<void> {
         console.log(`Processing batch of ${properties.length} properties`);
 
         for (const property of properties) {
+            // Check if we've hit the max properties limit
+            if (MAX_PROPERTIES && totalProcessed >= MAX_PROPERTIES) {
+                console.log(`Reached MAX_PROPERTIES limit of ${MAX_PROPERTIES}. Stopping sync.`);
+                break;
+            }
+
             try {
                 await upsertProperty(property);
                 await upsertMedia(property.ListingKey, property.Media || []);

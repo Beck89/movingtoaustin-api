@@ -15,12 +15,13 @@ const s3Client = new S3Client({
 
 const BUCKET = process.env.S3_BUCKET!;
 const CDN_BASE = process.env.CDN_BASE_URL || process.env.S3_ENDPOINT;
+const STORAGE_PREFIX = process.env.STORAGE_PREFIX || 'production'; // Default to production for safety
 
 export async function downloadAndUploadMedia(
     mediaUrl: string,
     listingKey: string,
     orderSequence: number,
-    mediaCategory: string
+    _mediaCategory: string
 ): Promise<string> {
     try {
         // Download from MLS
@@ -41,8 +42,9 @@ export async function downloadAndUploadMedia(
             contentType.includes('gif') ? 'gif' :
                 contentType.includes('webp') ? 'webp' : 'jpg';
 
-        // Generate stable key
-        const key = `${process.env.ORIGINATING_SYSTEM?.toLowerCase() || 'actris'}/${listingKey}/${orderSequence}.${ext}`;
+        // Generate stable key with environment prefix
+        const originatingSystem = process.env.ORIGINATING_SYSTEM?.toLowerCase() || 'actris';
+        const key = `${STORAGE_PREFIX}/${originatingSystem}/${listingKey}/${orderSequence}.${ext}`;
 
         // Upload to S3/R2
         await s3Client.send(new PutObjectCommand({
