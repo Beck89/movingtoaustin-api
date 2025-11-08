@@ -1,0 +1,19 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY tsconfig.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Copy ETL source
+COPY etl ./etl
+
+# Build TypeScript
+RUN npm run build
+
+# Run ETL worker
+CMD ["node", "dist/etl/src/index.js"]
