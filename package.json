@@ -10,6 +10,7 @@
     "db:migrate": "tsx api/db/migrate.ts",
     "setup:meilisearch": "tsx scripts/setup-meilisearch.ts",
     "test:import": "tsx scripts/test-import.ts",
+    "test:search": "tsx scripts/test-search.ts",
     "lint": "eslint . --ext .ts",
     "type-check": "tsc --noEmit"
   },

@@ -77,9 +77,9 @@ router.get('/', async (req: Request<{}, {}, {}, SearchQuery>, res: Response) => 
             filters.push(`standard_status = "${status}"`);
         }
 
-        // City
+        // City (normalize to uppercase for MLS data)
         if (city) {
-            filters.push(`city = "${city}"`);
+            filters.push(`city = "${city.toUpperCase()}"`);
         }
 
         // Features (if implemented)

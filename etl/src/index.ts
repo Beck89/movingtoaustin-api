@@ -1,6 +1,5 @@
 import pg from 'pg';
 import { MeiliSearch } from 'meilisearch';
-import dayjs from 'dayjs';
 import PQueue from 'p-queue';
 import pRetry from 'p-retry';
 import dotenv from 'dotenv';
@@ -93,6 +92,13 @@ async function setHighWaterMark(resource: string, timestamp: string): Promise<vo
     );
 }
 
+// Helper to safely convert to integer (handles decimal strings)
+function toInteger(value: any): number | null {
+    if (value === null || value === undefined) return null;
+    const num = typeof value === 'string' ? parseFloat(value) : value;
+    return isNaN(num) ? null : Math.round(num);
+}
+
 async function upsertProperty(property: Property): Promise<void> {
     const query = `
     INSERT INTO mls.properties (
@@ -143,7 +149,6 @@ async function upsertProperty(property: Property): Promise<void> {
   `;
 
     const photoCount = property.Media?.length || 0;
-    const primaryPhotoUrl = property.Media?.[0]?.MediaURL || null;
 
     await pool.query(query, [
         property.ListingKey,
@@ -158,11 +163,11 @@ async function upsertProperty(property: Property): Promise<void> {
         property.PhotosChangeTimestamp,
         property.ListPrice,
         property.ClosePrice,
-        property.BedroomsTotal,
-        property.BathroomsFull,
-        property.BathroomsHalf,
-        property.LivingArea,
-        property.YearBuilt,
+        toInteger(property.BedroomsTotal),
+        toInteger(property.BathroomsFull),
+        toInteger(property.BathroomsHalf),
+        toInteger(property.LivingArea), // Fix: convert decimal strings to integers
+        toInteger(property.YearBuilt),
         property.LotSizeAcres,
         property.Latitude,
         property.Longitude,
@@ -172,7 +177,7 @@ async function upsertProperty(property: Property): Promise<void> {
         property.CountyOrParish,
         property.SubdivisionName,
         property.UnparsedAddress,
-        property.DaysOnMarket,
+        toInteger(property.DaysOnMarket),
         property.PublicRemarks,
         property.VirtualTourURLBranded,
         property.VirtualTourURLUnbranded,
@@ -249,10 +254,10 @@ async function indexPropertyToSearch(property: Property): Promise<void> {
         property_type: property.PropertyType,
         property_sub_type: property.PropertySubType,
         list_price: property.ListPrice,
-        bedrooms_total: property.BedroomsTotal,
-        bathrooms_full: property.BathroomsFull,
-        living_area: property.LivingArea,
-        year_built: property.YearBuilt,
+        bedrooms_total: toInteger(property.BedroomsTotal),
+        bathrooms_full: toInteger(property.BathroomsFull),
+        living_area: toInteger(property.LivingArea),
+        year_built: toInteger(property.YearBuilt),
         lot_size_acres: property.LotSizeAcres,
         city: property.City,
         state_or_province: property.StateOrProvince,
@@ -274,6 +279,66 @@ async function indexPropertyToSearch(property: Property): Promise<void> {
 
     const index = searchClient.index(INDEX_NAME);
     await index.addDocuments([doc], { primaryKey: 'id' });
+}
+
+// Configure Meilisearch index settings on startup
+async function configureMeilisearchIndex(): Promise<void> {
+    console.log('🔧 Configuring Meilisearch index...');
+
+    try {
+        const index = searchClient.index(INDEX_NAME);
+
+        // Check if index needs configuration
+        const settings = await index.getSettings();
+
+        // Only configure if filterableAttributes is empty (not yet configured)
+        if (!settings.filterableAttributes || settings.filterableAttributes.length === 0) {
+            console.log('  - Setting filterable attributes...');
+            await index.updateFilterableAttributes([
+                'mlg_can_view',
+                'standard_status',
+                'property_type',
+                'property_sub_type',
+                'city',
+                'state_or_province',
+                'postal_code',
+                'county_or_parish',
+                'list_price',
+                'bedrooms_total',
+                'bathrooms_full',
+                'living_area',
+                'year_built',
+                'features',
+            ]);
+
+            console.log('  - Setting sortable attributes...');
+            await index.updateSortableAttributes([
+                'list_price',
+                'modification_timestamp',
+                'bedrooms_total',
+                'bathrooms_full',
+                'living_area',
+                'year_built',
+            ]);
+
+            console.log('  - Setting searchable attributes...');
+            await index.updateSearchableAttributes([
+                'address_full',
+                'city',
+                'postal_code',
+                'subdivision_name',
+                'listing_id',
+                'remarks_public',
+            ]);
+
+            console.log('✅ Meilisearch index configured successfully!');
+        } else {
+            console.log('✅ Meilisearch index already configured');
+        }
+    } catch (error) {
+        console.error('❌ Failed to configure Meilisearch index:', error);
+        throw error;
+    }
 }
 
 async function syncProperties(): Promise<void> {
@@ -372,7 +437,23 @@ async function runETL(): Promise<void> {
     }
 }
 
-// Run immediately, then on interval
-console.log(`Starting ETL worker (interval: ${INTERVAL_MINUTES} minutes)`);
-runETL();
-setInterval(runETL, INTERVAL_MINUTES * 60 * 1000);
+// Initialize: Configure Meilisearch, then start ETL
+async function initialize(): Promise<void> {
+    console.log(`Starting ETL worker (interval: ${INTERVAL_MINUTES} minutes)`);
+
+    try {
+        // Configure Meilisearch index on startup
+        await configureMeilisearchIndex();
+
+        // Run first sync
+        await runETL();
+
+        // Schedule recurring syncs
+        setInterval(runETL, INTERVAL_MINUTES * 60 * 1000);
+    } catch (error) {
+        console.error('Failed to initialize ETL:', error);
+        process.exit(1);
+    }
+}
+
+initialize();
