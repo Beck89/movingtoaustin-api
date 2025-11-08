@@ -23,6 +23,7 @@ const INDEX_NAME = process.env.MEILI_INDEX || 'listings_actris_v1';
 const ORIGINATING_SYSTEM = process.env.ORIGINATING_SYSTEM || 'ACTRIS';
 const BATCH_SIZE = parseInt(process.env.ETL_BATCH_SIZE || '100', 10);
 const INTERVAL_MINUTES = parseInt(process.env.ETL_INTERVAL_MINUTES || '5', 10);
+const MAX_PROPERTIES = process.env.ETL_MAX_PROPERTIES ? parseInt(process.env.ETL_MAX_PROPERTIES, 10) : null;
 
 // Queue for media downloads (limit concurrency)
 const mediaQueue = new PQueue({ concurrency: 5 });
@@ -304,7 +305,16 @@ async function syncProperties(): Promise<void> {
     let nextLink: string | null = `/Property?$filter=${encodeURIComponent(filterString)}&$expand=Media&$top=${BATCH_SIZE}&$orderby=ModificationTimestamp asc`;
     let totalProcessed = 0;
 
+    if (MAX_PROPERTIES) {
+        console.log(`⚠️  MAX_PROPERTIES limit set to ${MAX_PROPERTIES} (for testing)`);
+    }
+
     while (nextLink) {
+        // Check if we've hit the max properties limit
+        if (MAX_PROPERTIES && totalProcessed >= MAX_PROPERTIES) {
+            console.log(`Reached MAX_PROPERTIES limit of ${MAX_PROPERTIES}. Stopping sync.`);
+            break;
+        }
         // If nextLink is a full URL (from @odata.nextLink), extract just the path and query
         let endpoint = nextLink;
         if (nextLink.startsWith('http')) {
