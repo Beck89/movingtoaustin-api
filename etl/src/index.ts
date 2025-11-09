@@ -24,8 +24,12 @@ const BATCH_SIZE = parseInt(process.env.ETL_BATCH_SIZE || '100', 10);
 const INTERVAL_MINUTES = parseInt(process.env.ETL_INTERVAL_MINUTES || '5', 10);
 const MAX_PROPERTIES = process.env.ETL_MAX_PROPERTIES ? parseInt(process.env.ETL_MAX_PROPERTIES, 10) : null;
 
-// Queue for media downloads (limit concurrency)
-const mediaQueue = new PQueue({ concurrency: 5 });
+// Queue for media downloads (limit concurrency to avoid rate limiting)
+const mediaQueue = new PQueue({
+    concurrency: 1,  // Only 1 download at a time
+    interval: 5000,  // Wait 5 seconds between downloads (increased from 2s)
+    intervalCap: 1   // Only 1 download per interval
+});
 
 interface Property {
     ListingKey: string;
@@ -232,7 +236,15 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
             mediaQueue.add(() =>
                 pRetry(
                     () => downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo'),
-                    { retries: 3 }
+                    {
+                        retries: 5,  // Increased from 3
+                        minTimeout: 10000,  // Start with 10 second delay
+                        maxTimeout: 60000,  // Max 60 second delay
+                        factor: 2,  // Exponential backoff
+                        onFailedAttempt: (error) => {
+                            console.log(`Media download attempt ${error.attemptNumber} failed. ${error.retriesLeft} retries left. Waiting ${error.attemptNumber * 10}s before retry...`);
+                        }
+                    }
                 ).then(async (localUrl) => {
                     await pool.query(
                         `UPDATE mls.media SET local_url = $1 WHERE media_key = $2`,
