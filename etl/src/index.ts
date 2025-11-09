@@ -331,8 +331,26 @@ async function upsertUnitTypes(listingKey: string, unitTypes: UnitType[]): Promi
     }
 }
 
-async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
+async function upsertMedia(listingKey: string, media: Media[], photosChangeTimestamp?: string): Promise<void> {
     if (!media || media.length === 0) return;
+
+    // Check if photos have changed by comparing PhotosChangeTimestamp
+    // Only download media if photos changed or if we don't have local_url yet
+    const shouldCheckForChanges = photosChangeTimestamp !== undefined;
+
+    let photosChanged = true; // Default to true if no timestamp to compare
+    if (shouldCheckForChanges) {
+        const result = await pool.query(
+            `SELECT photos_change_timestamp FROM mls.properties WHERE listing_key = $1`,
+            [listingKey]
+        );
+
+        if (result.rows.length > 0 && result.rows[0].photos_change_timestamp) {
+            const existingTimestamp = new Date(result.rows[0].photos_change_timestamp).getTime();
+            const newTimestamp = new Date(photosChangeTimestamp).getTime();
+            photosChanged = newTimestamp > existingTimestamp;
+        }
+    }
 
     for (const item of media) {
         const query = `
@@ -374,7 +392,18 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
         const isVideo = item.MediaCategory === 'Video' ||
             (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));
 
-        if (item.MediaURL && !isVideo && s3Configured) {
+        // Check if we already have this media downloaded
+        const existingMedia = await pool.query(
+            `SELECT local_url FROM mls.media WHERE media_key = $1 AND local_url IS NOT NULL`,
+            [item.MediaKey]
+        );
+        const alreadyDownloaded = existingMedia.rows.length > 0;
+
+        // Only download if:
+        // 1. S3 is configured
+        // 2. It's not a video
+        // 3. Photos have changed OR we don't have it downloaded yet
+        if (item.MediaURL && !isVideo && s3Configured && (photosChanged || !alreadyDownloaded)) {
             // Queue media download with patient retry for rate limits
             // MLS Grid rate limits last 1 hour, so we need to be very patient
             mediaQueue.add(() =>
@@ -705,7 +734,7 @@ async function syncProperties(): Promise<void> {
 
             try {
                 await upsertProperty(property);
-                await upsertMedia(property.ListingKey, property.Media || []);
+                await upsertMedia(property.ListingKey, property.Media || [], property.PhotosChangeTimestamp);
                 await upsertRooms(property.ListingKey, property.Rooms || []);
                 await upsertUnitTypes(property.ListingKey, property.UnitTypes || []);
                 await indexPropertyToSearch(property);
