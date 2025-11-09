@@ -12,16 +12,16 @@ ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS new_construction_yn boolean;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS pool_private_yn boolean;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS waterfront_yn boolean;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS levels text[];
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS garage_spaces integer;
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS parking_total integer;
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS garage_spaces numeric(4,1);
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS parking_total numeric(4,1);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS elementary_school text;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS high_school_district text;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS association_fee numeric(10,2);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS association_fee_frequency text;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS tax_annual_amount numeric(12,2);
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS fireplaces_total integer;
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS fireplaces_total numeric(4,1);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS street_name text;
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS bathrooms_total_integer integer;
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS bathrooms_total_integer numeric(4,1);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS original_entry_timestamp timestamptz;
 
 -- Backfill data from raw JSONB column where possible
@@ -36,16 +36,16 @@ SET
   new_construction_yn = COALESCE(new_construction_yn, (raw->>'NewConstructionYN')::boolean),
   pool_private_yn = COALESCE(pool_private_yn, (raw->>'PoolPrivateYN')::boolean),
   waterfront_yn = COALESCE(waterfront_yn, (raw->>'WaterfrontYN')::boolean),
-  garage_spaces = COALESCE(garage_spaces, (raw->>'GarageSpaces')::integer),
-  parking_total = COALESCE(parking_total, (raw->>'ParkingTotal')::integer),
+  garage_spaces = COALESCE(garage_spaces, (raw->>'GarageSpaces')::numeric),
+  parking_total = COALESCE(parking_total, (raw->>'ParkingTotal')::numeric),
   elementary_school = COALESCE(elementary_school, raw->>'ElementarySchool'),
   high_school_district = COALESCE(high_school_district, raw->>'HighSchoolDistrict'),
   association_fee = COALESCE(association_fee, (raw->>'AssociationFee')::numeric),
   association_fee_frequency = COALESCE(association_fee_frequency, raw->>'AssociationFeeFrequency'),
   tax_annual_amount = COALESCE(tax_annual_amount, (raw->>'TaxAnnualAmount')::numeric),
-  fireplaces_total = COALESCE(fireplaces_total, (raw->>'FireplacesTotal')::integer),
+  fireplaces_total = COALESCE(fireplaces_total, (raw->>'FireplacesTotal')::numeric),
   street_name = COALESCE(street_name, raw->>'StreetName'),
-  bathrooms_total_integer = COALESCE(bathrooms_total_integer, ROUND((raw->>'BathroomsTotalInteger')::numeric)::integer),
+  bathrooms_total_integer = COALESCE(bathrooms_total_integer, (raw->>'BathroomsTotalInteger')::numeric),
   original_entry_timestamp = COALESCE(original_entry_timestamp, (raw->>'OriginalEntryTimestamp')::timestamptz)
 WHERE raw IS NOT NULL;
 
