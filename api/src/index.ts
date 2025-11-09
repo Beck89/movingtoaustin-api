@@ -2,9 +2,11 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import pg from 'pg';
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 import searchRouter from './routes/search.js';
+import listingsSearchRouter from './routes/listings-search.js';
 import detailRouter from './routes/detail.js';
 import suggestRouter from './routes/suggest.js';
 import statusRouter from './routes/status.js';
@@ -12,6 +14,15 @@ import statusRouter from './routes/status.js';
 dotenv.config();
 
 const app = express();
+
+// Initialize database pool
+const pool = new pg.Pool({
+    connectionString: process.env.PG_URL,
+    max: 10,
+});
+
+// Make pool available to routes
+app.locals.db = pool;
 const PORT = process.env.API_PORT || 3000;
 const HOST = process.env.API_HOST || '0.0.0.0';
 
@@ -40,7 +51,8 @@ app.get('/health', (_req, res) => {
 });
 
 // Routes
-app.use('/listings/search', searchRouter);
+app.use('/api/listings/search', listingsSearchRouter); // New comprehensive search endpoint
+app.use('/listings/search', searchRouter); // Legacy search endpoint (keep for backward compatibility)
 app.use('/listings', detailRouter);
 app.use('/suggest', suggestRouter);
 app.use('/status', statusRouter);

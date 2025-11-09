@@ -49,10 +49,13 @@ interface Property {
     ModificationTimestamp: string;
     PhotosChangeTimestamp?: string;
     ListPrice?: number;
+    OriginalListPrice?: number;
+    PriceChangeTimestamp?: string;
     ClosePrice?: number;
     BedroomsTotal?: number;
     BathroomsFull?: number;
     BathroomsHalf?: number;
+    BathroomsTotalInteger?: number;
     LivingArea?: number;
     YearBuilt?: number;
     LotSizeAcres?: number;
@@ -64,10 +67,28 @@ interface Property {
     CountyOrParish?: string;
     SubdivisionName?: string;
     UnparsedAddress?: string;
+    StreetName?: string;
     DaysOnMarket?: number;
     PublicRemarks?: string;
     VirtualTourURLBranded?: string;
     VirtualTourURLUnbranded?: string;
+    ListAgentKey?: string;
+    ListOfficeName?: string;
+    MajorChangeType?: string;
+    MajorChangeTimestamp?: string;
+    OriginalEntryTimestamp?: string;
+    NewConstructionYN?: boolean;
+    PoolPrivateYN?: boolean;
+    WaterfrontYN?: boolean;
+    Levels?: string[];
+    GarageSpaces?: number;
+    ParkingTotal?: number;
+    ElementarySchool?: string;
+    HighSchoolDistrict?: string;
+    AssociationFee?: number;
+    AssociationFeeFrequency?: string;
+    TaxAnnualAmount?: number;
+    FireplacesTotal?: number;
     Media?: Media[];
     Rooms?: Room[];
     UnitTypes?: UnitType[];
@@ -133,15 +154,21 @@ async function upsertProperty(property: Property): Promise<void> {
     INSERT INTO mls.properties (
       listing_key, listing_id, originating_system_name, standard_status,
       property_type, property_sub_type, mlg_can_view, mlg_can_use,
-      modification_timestamp, photos_change_timestamp, list_price, close_price,
-      bedrooms_total, bathrooms_full, bathrooms_half, living_area, year_built,
-      lot_size_acres, latitude, longitude, city, state_or_province, postal_code,
-      county_or_parish, subdivision_name, address_full, days_on_market,
-      remarks_public, virtual_tour_url_branded, virtual_tour_url_unbranded,
-      photo_count, raw
+      modification_timestamp, photos_change_timestamp, list_price, original_list_price,
+      price_change_timestamp, close_price, bedrooms_total, bathrooms_full, bathrooms_half,
+      bathrooms_total_integer, living_area, year_built, lot_size_acres, latitude, longitude,
+      city, state_or_province, postal_code, county_or_parish, subdivision_name, address_full,
+      street_name, days_on_market, remarks_public, virtual_tour_url_branded,
+      virtual_tour_url_unbranded, list_agent_key, list_office_name, major_change_type,
+      major_change_timestamp, original_entry_timestamp, new_construction_yn, pool_private_yn,
+      waterfront_yn, levels, garage_spaces, parking_total, elementary_school,
+      high_school_district, association_fee, association_fee_frequency, tax_annual_amount,
+      fireplaces_total, photo_count, raw
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+      $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34,
+      $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50,
+      $51, $52, $53
     )
     ON CONFLICT (listing_key) DO UPDATE SET
       listing_id = EXCLUDED.listing_id,
@@ -153,10 +180,13 @@ async function upsertProperty(property: Property): Promise<void> {
       modification_timestamp = EXCLUDED.modification_timestamp,
       photos_change_timestamp = EXCLUDED.photos_change_timestamp,
       list_price = EXCLUDED.list_price,
+      original_list_price = EXCLUDED.original_list_price,
+      price_change_timestamp = EXCLUDED.price_change_timestamp,
       close_price = EXCLUDED.close_price,
       bedrooms_total = EXCLUDED.bedrooms_total,
       bathrooms_full = EXCLUDED.bathrooms_full,
       bathrooms_half = EXCLUDED.bathrooms_half,
+      bathrooms_total_integer = EXCLUDED.bathrooms_total_integer,
       living_area = EXCLUDED.living_area,
       year_built = EXCLUDED.year_built,
       lot_size_acres = EXCLUDED.lot_size_acres,
@@ -168,10 +198,28 @@ async function upsertProperty(property: Property): Promise<void> {
       county_or_parish = EXCLUDED.county_or_parish,
       subdivision_name = EXCLUDED.subdivision_name,
       address_full = EXCLUDED.address_full,
+      street_name = EXCLUDED.street_name,
       days_on_market = EXCLUDED.days_on_market,
       remarks_public = EXCLUDED.remarks_public,
       virtual_tour_url_branded = EXCLUDED.virtual_tour_url_branded,
       virtual_tour_url_unbranded = EXCLUDED.virtual_tour_url_unbranded,
+      list_agent_key = EXCLUDED.list_agent_key,
+      list_office_name = EXCLUDED.list_office_name,
+      major_change_type = EXCLUDED.major_change_type,
+      major_change_timestamp = EXCLUDED.major_change_timestamp,
+      original_entry_timestamp = EXCLUDED.original_entry_timestamp,
+      new_construction_yn = EXCLUDED.new_construction_yn,
+      pool_private_yn = EXCLUDED.pool_private_yn,
+      waterfront_yn = EXCLUDED.waterfront_yn,
+      levels = EXCLUDED.levels,
+      garage_spaces = EXCLUDED.garage_spaces,
+      parking_total = EXCLUDED.parking_total,
+      elementary_school = EXCLUDED.elementary_school,
+      high_school_district = EXCLUDED.high_school_district,
+      association_fee = EXCLUDED.association_fee,
+      association_fee_frequency = EXCLUDED.association_fee_frequency,
+      tax_annual_amount = EXCLUDED.tax_annual_amount,
+      fireplaces_total = EXCLUDED.fireplaces_total,
       photo_count = EXCLUDED.photo_count,
       raw = EXCLUDED.raw,
       updated_at = NOW()
@@ -191,11 +239,14 @@ async function upsertProperty(property: Property): Promise<void> {
         property.ModificationTimestamp,
         property.PhotosChangeTimestamp,
         property.ListPrice,
+        property.OriginalListPrice,
+        property.PriceChangeTimestamp,
         property.ClosePrice,
         toInteger(property.BedroomsTotal),
         toInteger(property.BathroomsFull),
         toInteger(property.BathroomsHalf),
-        toInteger(property.LivingArea), // Fix: convert decimal strings to integers
+        toInteger(property.BathroomsTotalInteger),
+        toInteger(property.LivingArea),
         toInteger(property.YearBuilt),
         property.LotSizeAcres,
         property.Latitude,
@@ -206,10 +257,28 @@ async function upsertProperty(property: Property): Promise<void> {
         property.CountyOrParish,
         property.SubdivisionName,
         property.UnparsedAddress,
+        property.StreetName,
         toInteger(property.DaysOnMarket),
         property.PublicRemarks,
         property.VirtualTourURLBranded,
         property.VirtualTourURLUnbranded,
+        property.ListAgentKey,
+        property.ListOfficeName,
+        property.MajorChangeType,
+        property.MajorChangeTimestamp,
+        property.OriginalEntryTimestamp,
+        property.NewConstructionYN,
+        property.PoolPrivateYN,
+        property.WaterfrontYN,
+        property.Levels || [],
+        toInteger(property.GarageSpaces),
+        toInteger(property.ParkingTotal),
+        property.ElementarySchool,
+        property.HighSchoolDistrict,
+        property.AssociationFee,
+        property.AssociationFeeFrequency,
+        property.TaxAnnualAmount,
+        toInteger(property.FireplacesTotal),
         photoCount,
         JSON.stringify(property),
     ]);
@@ -353,8 +422,10 @@ async function indexPropertyToSearch(property: Property): Promise<void> {
         property_type: property.PropertyType,
         property_sub_type: property.PropertySubType,
         list_price: property.ListPrice,
+        original_list_price: property.OriginalListPrice,
         bedrooms_total: toInteger(property.BedroomsTotal),
         bathrooms_full: toInteger(property.BathroomsFull),
+        bathrooms_total_integer: toInteger(property.BathroomsTotalInteger),
         living_area: toInteger(property.LivingArea),
         year_built: toInteger(property.YearBuilt),
         lot_size_acres: property.LotSizeAcres,
@@ -366,7 +437,16 @@ async function indexPropertyToSearch(property: Property): Promise<void> {
         county_or_parish: property.CountyOrParish,
         subdivision_name: property.SubdivisionName,
         address_full: property.UnparsedAddress,
+        street_name: property.StreetName,
         remarks_public: property.PublicRemarks,
+        elementary_school: property.ElementarySchool,
+        high_school_district: property.HighSchoolDistrict,
+        new_construction: property.NewConstructionYN,
+        pool_private: property.PoolPrivateYN,
+        waterfront: property.WaterfrontYN,
+        garage_spaces: toInteger(property.GarageSpaces),
+        parking_total: toInteger(property.ParkingTotal),
+        fireplaces_total: toInteger(property.FireplacesTotal),
         photo_count: property.Media?.length || 0,
         primary_photo_url: property.Media?.[0]?.MediaURL,
         _geo: property.Latitude && property.Longitude
@@ -375,6 +455,9 @@ async function indexPropertyToSearch(property: Property): Promise<void> {
         modification_timestamp: new Date(property.ModificationTimestamp).getTime(),
         photos_change_timestamp: property.PhotosChangeTimestamp
             ? new Date(property.PhotosChangeTimestamp).getTime()
+            : undefined,
+        original_entry_timestamp: property.OriginalEntryTimestamp
+            ? new Date(property.OriginalEntryTimestamp).getTime()
             : undefined,
     };
 
@@ -418,31 +501,47 @@ async function configureMeilisearchIndex(): Promise<void> {
                 'postal_code',
                 'county_or_parish',
                 'list_price',
+                'original_list_price',
                 'bedrooms_total',
                 'bathrooms_full',
+                'bathrooms_total_integer',
                 'living_area',
                 'year_built',
+                'lot_size_acres',
+                'garage_spaces',
+                'parking_total',
+                'new_construction',
+                'pool_private',
+                'waterfront',
+                'fireplaces_total',
                 'features',
             ]);
 
             console.log('  - Setting sortable attributes...');
             await index.updateSortableAttributes([
                 'list_price',
+                'original_list_price',
                 'modification_timestamp',
+                'original_entry_timestamp',
                 'bedrooms_total',
                 'bathrooms_full',
+                'bathrooms_total_integer',
                 'living_area',
                 'year_built',
+                'lot_size_acres',
             ]);
 
             console.log('  - Setting searchable attributes...');
             await index.updateSearchableAttributes([
                 'address_full',
+                'street_name',
                 'city',
                 'postal_code',
                 'subdivision_name',
                 'listing_id',
                 'remarks_public',
+                'elementary_school',
+                'high_school_district',
             ]);
 
             console.log('✅ Meilisearch index configured successfully!');
