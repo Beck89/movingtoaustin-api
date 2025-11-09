@@ -301,11 +301,12 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
         const s3Configured = process.env.S3_ENDPOINT && process.env.S3_BUCKET &&
             process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY;
 
-        // Download if URL exists and it's a photo (or category is null but URL looks like an image)
-        const isPhoto = item.MediaCategory === 'Photo' ||
-            (!item.MediaCategory && item.MediaURL && /\.(jpg|jpeg|png|gif|webp)$/i.test(item.MediaURL));
+        // Download if URL exists and it's not a video
+        // Many MLS systems don't set MediaCategory, so we check the URL extension
+        const isVideo = item.MediaCategory === 'Video' ||
+            (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));
 
-        if (item.MediaURL && isPhoto && s3Configured) {
+        if (item.MediaURL && !isVideo && s3Configured) {
             // Queue media download but don't await - let it run in background
             // This prevents media failures from blocking property sync
             mediaQueue.add(() =>
@@ -981,7 +982,7 @@ async function syncOpenHouses(): Promise<void> {
 }
 
 async function retryFailedMediaDownloads(): Promise<void> {
-    console.log(`[${new Date().toISOString()}] 🔄 Checking for media with missing local_url...`);
+    console.log(`[${new Date().toISOString()}] 🔄 Checking for properties with missing media...`);
 
     const s3Configured = process.env.S3_ENDPOINT && process.env.S3_BUCKET &&
         process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY;
@@ -992,70 +993,92 @@ async function retryFailedMediaDownloads(): Promise<void> {
     }
 
     try {
-        // Get count of failed media
-        const countResult = await pool.query(`
-            SELECT COUNT(*) as total
-            FROM mls.media
-            WHERE local_url IS NULL
-              AND media_url IS NOT NULL
-              AND media_category = 'Photo'
+        // Instead of using stale URLs from database, find properties that need media
+        // and re-fetch fresh URLs from MLS API
+        const result = await pool.query(`
+            SELECT DISTINCT p.listing_key
+            FROM mls.properties p
+            WHERE p.photo_count > 0
+              AND (
+                SELECT COUNT(*)
+                FROM mls.media m
+                WHERE m.listing_key = p.listing_key
+                  AND m.local_url IS NOT NULL
+              ) < p.photo_count
+            ORDER BY p.modification_timestamp DESC
+            LIMIT 10
         `);
 
-        const totalFailed = parseInt(countResult.rows[0].total, 10);
-
-        if (totalFailed === 0) {
-            console.log('✅ No failed media downloads to retry');
+        if (result.rows.length === 0) {
+            console.log('✅ All properties have their media downloaded');
             return;
         }
 
-        console.log(`📊 Total failed media: ${totalFailed.toLocaleString()}`);
+        console.log(`📊 Found ${result.rows.length} properties with missing media`);
+        console.log(`🔄 Re-fetching fresh media URLs from MLS API...`);
 
-        // Retry larger batches now that we have better concurrency control
-        const BATCH_SIZE = 500; // Increased from 50 to speed up recovery
-        const result = await pool.query(`
-            SELECT media_key, media_url, listing_key, order_sequence, media_category
-            FROM mls.media
-            WHERE local_url IS NULL
-              AND media_url IS NOT NULL
-              AND media_category = 'Photo'
-            ORDER BY media_modification_ts DESC
-            LIMIT $1
-        `, [BATCH_SIZE]);
+        // Re-fetch each property with fresh Media URLs
+        for (const row of result.rows) {
+            try {
+                const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey,Media`;
+                const data = await fetchMLSData(endpoint, {});
 
-        console.log(`Retrying ${result.rows.length} media files (batch of ${BATCH_SIZE})`);
+                if (data && data.Media && data.Media.length > 0) {
+                    console.log(`  Refreshing ${data.Media.length} media URLs for ${row.listing_key}`);
 
-        for (const media of result.rows) {
-            // Queue with minimal retry logic - rate limiting is handled by downloadAndUploadMedia
-            mediaQueue.add(() =>
-                pRetry(
-                    () => downloadAndUploadMedia(
-                        media.media_url,
-                        media.listing_key,
-                        media.order_sequence,
-                        media.media_category
-                    ),
-                    {
-                        retries: 1, // Only 1 retry for recovery
-                        minTimeout: 3000,
-                        onFailedAttempt: () => {
-                            // Silent - will be logged by storage.ts
+                    // Update media URLs in database and queue downloads
+                    for (const item of data.Media) {
+                        // Update the media_url with fresh token
+                        await pool.query(
+                            `UPDATE mls.media
+                             SET media_url = $1, media_modification_ts = $2
+                             WHERE media_key = $3`,
+                            [item.MediaURL, item.MediaModificationTimestamp, item.MediaKey]
+                        );
+
+                        // Queue download with fresh URL
+                        const isVideo = item.MediaCategory === 'Video' ||
+                            (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));
+
+                        if (item.MediaURL && !isVideo) {
+                            mediaQueue.add(() =>
+                                pRetry(
+                                    () => downloadAndUploadMedia(
+                                        item.MediaURL,
+                                        row.listing_key,
+                                        item.Order || 0,
+                                        item.MediaCategory || 'Photo'
+                                    ),
+                                    {
+                                        retries: 2,
+                                        minTimeout: 5000,
+                                        maxTimeout: 15000,
+                                        factor: 2,
+                                    }
+                                ).then(async (localUrl) => {
+                                    await pool.query(
+                                        'UPDATE mls.media SET local_url = $1 WHERE media_key = $2',
+                                        [localUrl, item.MediaKey]
+                                    );
+                                }).catch((err) => {
+                                    // Log non-400 errors (400 = still expired, which shouldn't happen with fresh URLs)
+                                    if (!err.message?.includes('400')) {
+                                        console.error(`[Media] Failed ${item.MediaKey}: ${err.message}`);
+                                    }
+                                })
+                            );
                         }
                     }
-                ).then(async (localUrl) => {
-                    await pool.query(
-                        'UPDATE mls.media SET local_url = $1 WHERE media_key = $2',
-                        [localUrl, media.media_key]
-                    );
-                }).catch(() => {
-                    // Silent fail - will retry in next cycle
-                })
-            );
+                }
+
+                // Rate limit: wait between property fetches
+                await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (error) {
+                console.error(`Failed to refresh media for ${row.listing_key}:`, error);
+            }
         }
 
-        // Wait a bit for the batch to process
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        console.log(`📈 Recovery batch queued: ${result.rows.length} files (${totalFailed - BATCH_SIZE} remaining)`);
+        console.log(`📈 Media recovery queued for ${result.rows.length} properties`);
     } catch (error) {
         console.error('Media recovery error:', error);
     }
