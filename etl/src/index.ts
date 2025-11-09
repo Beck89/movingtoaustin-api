@@ -30,8 +30,11 @@ const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES ? parseInt(process.env.ETL
 
 // Queue for media downloads
 // Rate limiting is handled by the centralized rate limiter in storage.ts
+// Increased concurrency to speed up downloads while respecting rate limits
 const mediaQueue = new PQueue({
-    concurrency: 1,  // Only 1 download at a time to avoid overwhelming the system
+    concurrency: 5,  // 5 concurrent downloads (rate limiter ensures we stay under 2 RPS)
+    interval: 1000,  // 1 second interval
+    intervalCap: 2,  // Max 2 requests per interval (respects 2 RPS limit)
 });
 
 interface Property {
@@ -303,16 +306,21 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
             (!item.MediaCategory && item.MediaURL && /\.(jpg|jpeg|png|gif|webp)$/i.test(item.MediaURL));
 
         if (item.MediaURL && isPhoto && s3Configured) {
+            // Queue media download but don't await - let it run in background
+            // This prevents media failures from blocking property sync
             mediaQueue.add(() =>
                 pRetry(
                     () => downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo'),
                     {
-                        retries: 5,  // Increased from 3
-                        minTimeout: 10000,  // Start with 10 second delay
-                        maxTimeout: 60000,  // Max 60 second delay
-                        factor: 2,  // Exponential backoff
+                        retries: 2,  // Reduced retries to fail faster
+                        minTimeout: 5000,  // 5 second delay
+                        maxTimeout: 15000,  // Max 15 second delay
+                        factor: 2,
                         onFailedAttempt: (error) => {
-                            console.log(`Media download attempt ${error.attemptNumber} failed. ${error.retriesLeft} retries left. Waiting ${error.attemptNumber * 10}s before retry...`);
+                            // Only log on final failure to reduce noise
+                            if (error.retriesLeft === 0) {
+                                console.log(`[Media] Final retry failed for ${item.MediaKey}`);
+                            }
                         }
                     }
                 ).then(async (localUrl) => {
@@ -321,7 +329,11 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
                         [localUrl, item.MediaKey]
                     );
                 }).catch((err) => {
-                    console.error(`Failed to download media ${item.MediaKey}:`, err);
+                    // Silently fail - recovery job will retry later
+                    // Only log if it's not a 400 error (which are expected for expired URLs)
+                    if (!err.message?.includes('400')) {
+                        console.error(`[Media] Failed ${item.MediaKey}: ${err.message}`);
+                    }
                 })
             );
         }
@@ -980,6 +992,26 @@ async function retryFailedMediaDownloads(): Promise<void> {
     }
 
     try {
+        // Get count of failed media
+        const countResult = await pool.query(`
+            SELECT COUNT(*) as total
+            FROM mls.media
+            WHERE local_url IS NULL
+              AND media_url IS NOT NULL
+              AND media_category = 'Photo'
+        `);
+
+        const totalFailed = parseInt(countResult.rows[0].total, 10);
+
+        if (totalFailed === 0) {
+            console.log('✅ No failed media downloads to retry');
+            return;
+        }
+
+        console.log(`📊 Total failed media: ${totalFailed.toLocaleString()}`);
+
+        // Retry larger batches now that we have better concurrency control
+        const BATCH_SIZE = 500; // Increased from 50 to speed up recovery
         const result = await pool.query(`
             SELECT media_key, media_url, listing_key, order_sequence, media_category
             FROM mls.media
@@ -987,18 +1019,13 @@ async function retryFailedMediaDownloads(): Promise<void> {
               AND media_url IS NOT NULL
               AND media_category = 'Photo'
             ORDER BY media_modification_ts DESC
-            LIMIT 100
-        `);
+            LIMIT $1
+        `, [BATCH_SIZE]);
 
-        if (result.rows.length === 0) {
-            console.log('✅ No failed media downloads to retry');
-            return;
-        }
-
-        console.log(`Found ${result.rows.length} media files to retry (respecting rate limits)`);
+        console.log(`Retrying ${result.rows.length} media files (batch of ${BATCH_SIZE})`);
 
         for (const media of result.rows) {
-            // Queue with retry logic - rate limiting is handled by downloadAndUploadMedia
+            // Queue with minimal retry logic - rate limiting is handled by downloadAndUploadMedia
             mediaQueue.add(() =>
                 pRetry(
                     () => downloadAndUploadMedia(
@@ -1008,12 +1035,10 @@ async function retryFailedMediaDownloads(): Promise<void> {
                         media.media_category
                     ),
                     {
-                        retries: 3,
-                        minTimeout: 5000,
-                        maxTimeout: 30000,
-                        factor: 2,
-                        onFailedAttempt: (error) => {
-                            console.log(`Media recovery attempt ${error.attemptNumber} failed for ${media.media_key}. ${error.retriesLeft} retries left.`);
+                        retries: 1, // Only 1 retry for recovery
+                        minTimeout: 3000,
+                        onFailedAttempt: () => {
+                            // Silent - will be logged by storage.ts
                         }
                     }
                 ).then(async (localUrl) => {
@@ -1021,14 +1046,16 @@ async function retryFailedMediaDownloads(): Promise<void> {
                         'UPDATE mls.media SET local_url = $1 WHERE media_key = $2',
                         [localUrl, media.media_key]
                     );
-                    console.log(`✅ Recovered media ${media.media_key}`);
-                }).catch((err) => {
-                    console.error(`❌ Failed to recover media ${media.media_key}:`, err.message);
+                }).catch(() => {
+                    // Silent fail - will retry in next cycle
                 })
             );
         }
 
-        console.log(`Queued ${result.rows.length} media files for recovery`);
+        // Wait a bit for the batch to process
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        console.log(`📈 Recovery batch queued: ${result.rows.length} files (${totalFailed - BATCH_SIZE} remaining)`);
     } catch (error) {
         console.error('Media recovery error:', error);
     }

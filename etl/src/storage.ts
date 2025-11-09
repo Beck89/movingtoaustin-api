@@ -73,13 +73,28 @@ export async function downloadAndUploadMedia(
         const response = await request(mediaUrl, {
             method: 'GET',
             maxRedirections: 5,
+            headersTimeout: 30000, // 30 second timeout
+            bodyTimeout: 60000,    // 60 second timeout
         });
 
         if (response.statusCode !== 200) {
+            // Log specific error codes for debugging
+            if (response.statusCode === 400) {
+                throw new Error(`Invalid media URL (400) - URL may be expired or malformed`);
+            } else if (response.statusCode === 404) {
+                throw new Error(`Media not found (404) - file may have been deleted`);
+            } else if (response.statusCode === 403) {
+                throw new Error(`Access denied (403) - authentication issue`);
+            }
             throw new Error(`Failed to download media: ${response.statusCode}`);
         }
 
         const buffer = Buffer.from(await response.body.arrayBuffer());
+
+        // Validate buffer size (skip empty or corrupt files)
+        if (buffer.length === 0) {
+            throw new Error('Downloaded file is empty');
+        }
 
         // Determine file extension
         const contentType = response.headers['content-type'] as string || 'image/jpeg';
@@ -103,7 +118,9 @@ export async function downloadAndUploadMedia(
         // Return CDN URL
         return `${CDN_BASE}/${key}`;
     } catch (error) {
-        console.error(`Failed to process media ${mediaUrl}:`, error);
+        // Enhanced error logging with context
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[Media Download Failed] Listing: ${listingKey}, Order: ${orderSequence}, URL: ${mediaUrl.substring(0, 100)}..., Error: ${errorMessage}`);
         throw error;
     }
 }
