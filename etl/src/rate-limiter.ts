@@ -14,7 +14,7 @@ export class RateLimiter {
     private requestCount = 0;
     private hourlyStartTime = Date.now();
     private readonly maxRequestsPerHour = 7000; // Leave 200 buffer
-    private readonly minDelayMs = 500; // Minimum 500ms between requests (max 2 RPS)
+    private readonly minDelayMs = 600; // Minimum 600ms between requests (conservative, ~1.6 RPS)
 
     /**
      * Wait if necessary to respect rate limits, then increment counter

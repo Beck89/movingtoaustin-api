@@ -1,4 +1,4 @@
-import { readFile } from 'fs/promises';
+import { readFile, readdir } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import pg from 'pg';
@@ -18,13 +18,26 @@ async function runMigrations() {
         await client.connect();
         console.log('Connected to database');
 
-        // Read and execute migration file
-        const migrationPath = join(__dirname, 'migrations', '0001_init.sql');
-        const migrationSQL = await readFile(migrationPath, 'utf-8');
+        // Get all migration files
+        const migrationsDir = join(__dirname, 'migrations');
+        const files = await readdir(migrationsDir);
+        const migrationFiles = files
+            .filter(f => f.endsWith('.sql'))
+            .sort(); // Sort to ensure migrations run in order
 
-        console.log('Running migration: 0001_init.sql');
-        await client.query(migrationSQL);
-        console.log('Migration completed successfully');
+        console.log(`Found ${migrationFiles.length} migration(s)`);
+
+        // Run each migration
+        for (const file of migrationFiles) {
+            const migrationPath = join(migrationsDir, file);
+            const migrationSQL = await readFile(migrationPath, 'utf-8');
+
+            console.log(`Running migration: ${file}`);
+            await client.query(migrationSQL);
+            console.log(`✓ ${file} completed`);
+        }
+
+        console.log('All migrations completed successfully');
 
     } catch (error) {
         console.error('Migration failed:', error);

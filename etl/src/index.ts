@@ -23,18 +23,17 @@ const INDEX_NAME = process.env.MEILI_INDEX || 'listings_actris_v1';
 const ORIGINATING_SYSTEM = process.env.ORIGINATING_SYSTEM || 'ACTRIS';
 const BATCH_SIZE = parseInt(process.env.ETL_BATCH_SIZE || '100', 10);
 const INTERVAL_MINUTES = parseInt(process.env.ETL_INTERVAL_MINUTES || '5', 10);
-const MAX_PROPERTIES = process.env.ETL_MAX_PROPERTIES ? parseInt(process.env.ETL_MAX_PROPERTIES, 10) : null;
-const MAX_MEMBERS = process.env.ETL_MAX_MEMBERS ? parseInt(process.env.ETL_MAX_MEMBERS, 10) : null;
-const MAX_OFFICES = process.env.ETL_MAX_OFFICES ? parseInt(process.env.ETL_MAX_OFFICES, 10) : null;
-const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES ? parseInt(process.env.ETL_MAX_OPENHOUSES, 10) : null;
+const MAX_PROPERTIES = process.env.ETL_MAX_PROPERTIES && process.env.ETL_MAX_PROPERTIES.trim() !== '' ? parseInt(process.env.ETL_MAX_PROPERTIES, 10) : null;
+const MAX_MEMBERS = process.env.ETL_MAX_MEMBERS && process.env.ETL_MAX_MEMBERS.trim() !== '' ? parseInt(process.env.ETL_MAX_MEMBERS, 10) : null;
+const MAX_OFFICES = process.env.ETL_MAX_OFFICES && process.env.ETL_MAX_OFFICES.trim() !== '' ? parseInt(process.env.ETL_MAX_OFFICES, 10) : null;
+const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES && process.env.ETL_MAX_OPENHOUSES.trim() !== '' ? parseInt(process.env.ETL_MAX_OPENHOUSES, 10) : null;
 
 // Queue for media downloads
-// Rate limiting is handled by the centralized rate limiter in storage.ts
-// Increased concurrency to speed up downloads while respecting rate limits
+// Conservative settings to strictly respect MLS Grid's 2 RPS limit
 const mediaQueue = new PQueue({
-    concurrency: 5,  // 5 concurrent downloads (rate limiter ensures we stay under 2 RPS)
+    concurrency: 1,  // Process one at a time to avoid race conditions with rate limiter
     interval: 1000,  // 1 second interval
-    intervalCap: 2,  // Max 2 requests per interval (respects 2 RPS limit)
+    intervalCap: 1,  // Max 1 request per second (well under 2 RPS limit)
 });
 
 interface Property {
@@ -376,20 +375,24 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
             (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));
 
         if (item.MediaURL && !isVideo && s3Configured) {
-            // Queue media download but don't await - let it run in background
-            // This prevents media failures from blocking property sync
+            // Queue media download with patient retry for rate limits
+            // MLS Grid rate limits last 1 hour, so we need to be very patient
             mediaQueue.add(() =>
                 pRetry(
                     () => downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo'),
                     {
-                        retries: 2,  // Reduced retries to fail faster
-                        minTimeout: 5000,  // 5 second delay
-                        maxTimeout: 15000,  // Max 15 second delay
-                        factor: 2,
+                        retries: 20,  // Many retries to handle 1-hour rate limit blocks
+                        minTimeout: 60000,  // Start with 1 minute wait
+                        maxTimeout: 600000,  // Max 10 minutes between retries
+                        factor: 1.5,  // Slower exponential backoff
                         onFailedAttempt: (error) => {
-                            // Only log on final failure to reduce noise
-                            if (error.retriesLeft === 0) {
-                                console.log(`[Media] Final retry failed for ${item.MediaKey}`);
+                            // Special handling for 429 (rate limit) errors
+                            if (error.message?.includes('429')) {
+                                const waitTime = Math.min(error.attemptNumber * 60000 * Math.pow(1.5, error.attemptNumber - 1), 600000);
+                                console.log(`[Media] Rate limit (429) for ${item.MediaKey}, retry ${error.attemptNumber}/20 (waiting ${Math.round(waitTime / 60000)} minutes)`);
+                            } else if (error.retriesLeft === 0) {
+                                // Only log non-429 final failures
+                                console.log(`[Media] Final retry failed for ${item.MediaKey}: ${error.message}`);
                             }
                         }
                     }
@@ -399,10 +402,9 @@ async function upsertMedia(listingKey: string, media: Media[]): Promise<void> {
                         [localUrl, item.MediaKey]
                     );
                 }).catch((err) => {
-                    // Silently fail - recovery job will retry later
-                    // Only log if it's not a 400 error (which are expected for expired URLs)
+                    // Log all final failures (after all retries exhausted)
                     if (!err.message?.includes('400')) {
-                        console.error(`[Media] Failed ${item.MediaKey}: ${err.message}`);
+                        console.error(`[Media] Failed after all retries ${item.MediaKey}: ${err.message}`);
                     }
                 })
             );
@@ -718,6 +720,12 @@ async function syncProperties(): Promise<void> {
                 console.error(`Failed to process property ${property.ListingKey}:`, error);
             }
         }
+
+        // Download media for this batch immediately (before URLs expire)
+        // Wait for all queued media downloads to complete before moving to next batch
+        console.log(`⏳ Waiting for ${mediaQueue.size + mediaQueue.pending} media downloads to complete...`);
+        await mediaQueue.onIdle();
+        console.log(`✅ Batch media downloads complete`);
 
         nextLink = data['@odata.nextLink'] || null;
 

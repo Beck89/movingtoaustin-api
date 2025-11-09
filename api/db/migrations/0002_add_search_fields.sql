@@ -59,48 +59,47 @@ WHERE raw IS NOT NULL
   AND jsonb_typeof(raw->'Levels') = 'array'
   AND levels IS NULL;
 
--- Create indexes for new filterable fields (CONCURRENTLY to avoid locking)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_original_list_price 
+-- Create indexes for new filterable fields
+CREATE INDEX IF NOT EXISTS idx_properties_original_list_price
   ON mls.properties(original_list_price);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_property_sub_type 
+CREATE INDEX IF NOT EXISTS idx_properties_property_sub_type
   ON mls.properties(property_sub_type);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_garage_spaces 
+CREATE INDEX IF NOT EXISTS idx_properties_garage_spaces
   ON mls.properties(garage_spaces);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_parking_total 
+CREATE INDEX IF NOT EXISTS idx_properties_parking_total
   ON mls.properties(parking_total);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_new_construction 
+CREATE INDEX IF NOT EXISTS idx_properties_new_construction
   ON mls.properties(new_construction_yn) WHERE new_construction_yn = true;
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_pool_private 
+CREATE INDEX IF NOT EXISTS idx_properties_pool_private
   ON mls.properties(pool_private_yn) WHERE pool_private_yn = true;
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_waterfront 
+CREATE INDEX IF NOT EXISTS idx_properties_waterfront
   ON mls.properties(waterfront_yn) WHERE waterfront_yn = true;
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_major_change 
+CREATE INDEX IF NOT EXISTS idx_properties_major_change
   ON mls.properties(major_change_type, major_change_timestamp);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_original_entry 
+CREATE INDEX IF NOT EXISTS idx_properties_original_entry
   ON mls.properties(original_entry_timestamp DESC);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_lot_size 
+CREATE INDEX IF NOT EXISTS idx_properties_lot_size
   ON mls.properties(lot_size_acres);
 
 -- Composite index for common filter combinations
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_type_status_price 
+CREATE INDEX IF NOT EXISTS idx_properties_type_status_price
   ON mls.properties(property_sub_type, standard_status, list_price);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_properties_beds_baths_price 
+CREATE INDEX IF NOT EXISTS idx_properties_beds_baths_price
   ON mls.properties(bedrooms_total, bathrooms_total_integer, list_price);
 
 -- Index for open houses time-based queries
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_open_houses_time_range 
-  ON mls.open_houses(listing_key, start_time, end_time) 
-  WHERE start_time >= NOW();
+CREATE INDEX IF NOT EXISTS idx_open_houses_time_range
+  ON mls.open_houses(listing_key, start_time, end_time);
 
 -- Add comment for documentation
 COMMENT ON COLUMN mls.properties.original_list_price IS 'Original listing price when first listed';

@@ -102,6 +102,12 @@ services:
       ETL_INTERVAL_MINUTES: ${ETL_INTERVAL_MINUTES:-5}
       ETL_BATCH_SIZE: ${ETL_BATCH_SIZE:-100}
       ETL_MAX_RETRIES: ${ETL_MAX_RETRIES:-3}
+      # Development limits (leave empty for production - no limits)
+      ETL_MAX_PROPERTIES: ${ETL_MAX_PROPERTIES}
+      ETL_MAX_MEMBERS: ${ETL_MAX_MEMBERS}
+      ETL_MAX_OFFICES: ${ETL_MAX_OFFICES}
+      ETL_MAX_OPENHOUSES: ${ETL_MAX_OPENHOUSES}
+      ETL_RESET_ON_START: ${ETL_RESET_ON_START}
       
       # Optional: S3/R2 Storage
       S3_ENDPOINT: ${S3_ENDPOINT:-}
