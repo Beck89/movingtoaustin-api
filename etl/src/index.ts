@@ -345,6 +345,8 @@ async function indexPropertyToSearch(property: Property): Promise<void> {
         living_area: toInteger(property.LivingArea),
         year_built: toInteger(property.YearBuilt),
         lot_size_acres: property.LotSizeAcres,
+        latitude: property.Latitude,
+        longitude: property.Longitude,
         city: property.City,
         state_or_province: property.StateOrProvince,
         postal_code: property.PostalCode,
@@ -966,6 +968,72 @@ async function syncOpenHouses(): Promise<void> {
     console.log(`Open house sync complete. Processed ${totalProcessed} open houses`);
 }
 
+async function retryFailedMediaDownloads(): Promise<void> {
+    console.log(`[${new Date().toISOString()}] 🔄 Checking for media with missing local_url...`);
+
+    const s3Configured = process.env.S3_ENDPOINT && process.env.S3_BUCKET &&
+        process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY;
+
+    if (!s3Configured) {
+        console.log('⏭️  Skipping media recovery - S3/R2 storage not configured');
+        return;
+    }
+
+    try {
+        const result = await pool.query(`
+            SELECT media_key, media_url, listing_key, order_sequence, media_category
+            FROM mls.media
+            WHERE local_url IS NULL
+              AND media_url IS NOT NULL
+              AND media_category = 'Photo'
+            ORDER BY media_modification_ts DESC
+            LIMIT 100
+        `);
+
+        if (result.rows.length === 0) {
+            console.log('✅ No failed media downloads to retry');
+            return;
+        }
+
+        console.log(`Found ${result.rows.length} media files to retry (respecting rate limits)`);
+
+        for (const media of result.rows) {
+            // Queue with retry logic - rate limiting is handled by downloadAndUploadMedia
+            mediaQueue.add(() =>
+                pRetry(
+                    () => downloadAndUploadMedia(
+                        media.media_url,
+                        media.listing_key,
+                        media.order_sequence,
+                        media.media_category
+                    ),
+                    {
+                        retries: 3,
+                        minTimeout: 5000,
+                        maxTimeout: 30000,
+                        factor: 2,
+                        onFailedAttempt: (error) => {
+                            console.log(`Media recovery attempt ${error.attemptNumber} failed for ${media.media_key}. ${error.retriesLeft} retries left.`);
+                        }
+                    }
+                ).then(async (localUrl) => {
+                    await pool.query(
+                        'UPDATE mls.media SET local_url = $1 WHERE media_key = $2',
+                        [localUrl, media.media_key]
+                    );
+                    console.log(`✅ Recovered media ${media.media_key}`);
+                }).catch((err) => {
+                    console.error(`❌ Failed to recover media ${media.media_key}:`, err.message);
+                })
+            );
+        }
+
+        console.log(`Queued ${result.rows.length} media files for recovery`);
+    } catch (error) {
+        console.error('Media recovery error:', error);
+    }
+}
+
 async function runETL(): Promise<void> {
     try {
         // Sync active properties first
@@ -978,6 +1046,9 @@ async function runETL(): Promise<void> {
         await syncMembers();
         await syncOffices();
         await syncOpenHouses();
+
+        // Retry failed media downloads (runs after main sync to avoid competing for rate limits)
+        await retryFailedMediaDownloads();
     } catch (error) {
         console.error('ETL error:', error);
     }

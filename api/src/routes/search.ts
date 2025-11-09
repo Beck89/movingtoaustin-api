@@ -11,6 +11,7 @@ interface SearchQuery {
     baths?: string;
     status?: string;
     city?: string;
+    propertyType?: string; // Exact property_type value or comma-separated list
     features?: string; // comma-separated
     text?: string;
     page?: string;
@@ -68,6 +69,12 @@ interface SearchQuery {
  *         description: City name
  *         example: "Austin"
  *       - in: query
+ *         name: propertyType
+ *         schema:
+ *           type: string
+ *         description: Filter by property type (exact value or comma-separated list). Values - Residential, Land, Farm, Commercial Sale, Residential Income, Residential Lease, Commercial Lease
+ *         example: "Residential,Land"
+ *       - in: query
  *         name: features
  *         schema:
  *           type: string
@@ -115,6 +122,7 @@ router.get('/', async (req: Request<{}, {}, {}, SearchQuery>, res: Response) => 
             baths,
             status,
             city,
+            propertyType,
             features,
             text,
             page = '1',
@@ -168,6 +176,17 @@ router.get('/', async (req: Request<{}, {}, {}, SearchQuery>, res: Response) => 
         // City (normalize to uppercase for MLS data)
         if (city) {
             filters.push(`city = "${city.toUpperCase()}"`);
+        }
+
+        // Property Type (exact match or multiple types)
+        if (propertyType) {
+            const types = propertyType.split(',').map(t => t.trim());
+            if (types.length === 1) {
+                filters.push(`property_type = "${types[0]}"`);
+            } else {
+                const typeFilters = types.map(t => `property_type = "${t}"`);
+                filters.push(`(${typeFilters.join(' OR ')})`);
+            }
         }
 
         // Features (if implemented)
