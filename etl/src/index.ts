@@ -4,7 +4,8 @@ import PQueue from 'p-queue';
 import pRetry from 'p-retry';
 import dotenv from 'dotenv';
 import { fetchMLSData } from './mls-client.js';
-import { downloadAndUploadMedia } from './storage.js';
+import { downloadAndUploadMedia, deleteMediaForListing } from './storage.js';
+import { performReset } from './reset.js';
 
 dotenv.config();
 
@@ -442,6 +443,16 @@ async function configureMeilisearchIndex(): Promise<void> {
 async function syncDeletions(): Promise<void> {
     console.log(`[${new Date().toISOString()}] Checking for deleted properties (MlgCanView=false) for ${ORIGINATING_SYSTEM}`);
 
+    // Skip deletion sync if we have very few properties (likely a fresh start/reset)
+    const countResult = await pool.query('SELECT COUNT(*) FROM mls.properties WHERE originating_system_name = $1', [ORIGINATING_SYSTEM]);
+    const propertyCount = parseInt(countResult.rows[0].count, 10);
+
+    if (propertyCount < 500) {
+        console.log(`⏭️  Skipping deletion sync - only ${propertyCount} properties in database (likely fresh start)`);
+        console.log(`   Deletion sync will run once you have 500+ properties`);
+        return;
+    }
+
     const highWater = await getHighWaterMark('PropertyDeletions');
     let maxTimestamp = highWater;
 
@@ -477,6 +488,9 @@ async function syncDeletions(): Promise<void> {
 
         for (const property of properties) {
             try {
+                // Delete media files from storage first
+                await deleteMediaForListing(property.ListingKey, ORIGINATING_SYSTEM);
+
                 // Delete from database (CASCADE will handle media, rooms, unit_types)
                 await pool.query(
                     'DELETE FROM mls.properties WHERE listing_key = $1',
@@ -855,9 +869,11 @@ async function syncOpenHouses(): Promise<void> {
         console.log(`⚠️  MAX_OPENHOUSES limit set to ${MAX_OPENHOUSES} (for testing)`);
     }
 
+    let totalSeen = 0; // Track all open houses seen, not just processed
+
     while (nextLink) {
-        // Check if we've hit the max open houses limit
-        if (MAX_OPENHOUSES && totalProcessed >= MAX_OPENHOUSES) {
+        // Check if we've hit the max open houses limit (based on total seen, not just processed)
+        if (MAX_OPENHOUSES && totalSeen >= MAX_OPENHOUSES) {
             console.log(`Reached MAX_OPENHOUSES limit of ${MAX_OPENHOUSES}. Stopping sync.`);
             break;
         }
@@ -890,8 +906,10 @@ async function syncOpenHouses(): Promise<void> {
         console.log(`Processing batch of ${openHouses.length} open houses`);
 
         for (const openHouse of openHouses) {
+            totalSeen++; // Count every open house we see
+
             // Check if we've hit the max open houses limit
-            if (MAX_OPENHOUSES && totalProcessed >= MAX_OPENHOUSES) {
+            if (MAX_OPENHOUSES && totalSeen >= MAX_OPENHOUSES) {
                 console.log(`Reached MAX_OPENHOUSES limit of ${MAX_OPENHOUSES}. Stopping sync.`);
                 break;
             }
@@ -970,6 +988,12 @@ async function initialize(): Promise<void> {
     console.log(`Starting ETL worker (interval: ${INTERVAL_MINUTES} minutes)`);
 
     try {
+        // Check if reset is requested
+        if (process.env.ETL_RESET_ON_START === 'true') {
+            console.log(`\n⚠️  ETL_RESET_ON_START=true detected`);
+            await performReset(pool, searchClient, INDEX_NAME);
+        }
+
         // Configure Meilisearch index on startup
         await configureMeilisearchIndex();
 

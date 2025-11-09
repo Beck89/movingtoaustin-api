@@ -18,6 +18,47 @@ const BUCKET = process.env.S3_BUCKET!;
 const CDN_BASE = process.env.CDN_BASE_URL || process.env.S3_ENDPOINT;
 const STORAGE_PREFIX = process.env.STORAGE_PREFIX || 'production'; // Default to production for safety
 
+/**
+ * Delete media files from storage for a given listing
+ */
+export async function deleteMediaForListing(listingKey: string, originatingSystem: string): Promise<void> {
+    const storagePrefix = process.env.STORAGE_PREFIX || 'production';
+    const prefix = `${storagePrefix}/${originatingSystem.toLowerCase()}/${listingKey}/`;
+
+    try {
+        // List all objects with this prefix
+        const { ListObjectsV2Command, DeleteObjectsCommand } = await import('@aws-sdk/client-s3');
+
+        const listCommand = new ListObjectsV2Command({
+            Bucket: BUCKET,
+            Prefix: prefix,
+        });
+
+        const listResponse = await s3Client.send(listCommand);
+
+        if (!listResponse.Contents || listResponse.Contents.length === 0) {
+            console.log(`No media files found for listing ${listingKey}`);
+            return;
+        }
+
+        // Delete all objects
+        const objectsToDelete = listResponse.Contents.map(obj => ({ Key: obj.Key }));
+
+        const deleteCommand = new DeleteObjectsCommand({
+            Bucket: BUCKET,
+            Delete: {
+                Objects: objectsToDelete,
+            },
+        });
+
+        await s3Client.send(deleteCommand);
+        console.log(`Deleted ${objectsToDelete.length} media files for listing ${listingKey}`);
+    } catch (error) {
+        console.error(`Failed to delete media for listing ${listingKey}:`, error);
+        // Don't throw - we don't want media deletion failures to stop property deletion
+    }
+}
+
 export async function downloadAndUploadMedia(
     mediaUrl: string,
     listingKey: string,

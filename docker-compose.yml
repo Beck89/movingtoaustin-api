@@ -107,6 +107,7 @@ services:
       ETL_MAX_MEMBERS: ${ETL_MAX_MEMBERS:-}
       ETL_MAX_OFFICES: ${ETL_MAX_OFFICES:-}
       ETL_MAX_OPENHOUSES: ${ETL_MAX_OPENHOUSES:-}
+      ETL_RESET_ON_START: ${ETL_RESET_ON_START:-false}
       
       # Optional: S3/R2 Storage
       S3_ENDPOINT: ${S3_ENDPOINT:-}
