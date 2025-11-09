@@ -4,6 +4,90 @@ import searchClient, { INDEX_NAME } from '../search.js';
 
 const router = Router();
 
+/**
+ * @swagger
+ * /status:
+ *   get:
+ *     summary: Get system status
+ *     description: Retrieve comprehensive system status including database stats, sync health, media stats, and search index information
+ *     tags: [System]
+ *     responses:
+ *       200:
+ *         description: System status retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: "ok"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 sync:
+ *                   type: object
+ *                   properties:
+ *                     health:
+ *                       type: string
+ *                       enum: [healthy, warning]
+ *                     last_sync:
+ *                       type: string
+ *                       format: date-time
+ *                     minutes_since_last_sync:
+ *                       type: integer
+ *                     sync_interval_minutes:
+ *                       type: integer
+ *                     high_water_mark:
+ *                       type: string
+ *                       format: date-time
+ *                     originating_system:
+ *                       type: string
+ *                 database:
+ *                   type: object
+ *                   properties:
+ *                     total_properties:
+ *                       type: integer
+ *                     active_properties:
+ *                       type: integer
+ *                     viewable_properties:
+ *                       type: integer
+ *                     unique_cities:
+ *                       type: integer
+ *                     price_stats:
+ *                       type: object
+ *                       properties:
+ *                         average:
+ *                           type: number
+ *                         max:
+ *                           type: number
+ *                         min:
+ *                           type: number
+ *                 media:
+ *                   type: object
+ *                   properties:
+ *                     total_media:
+ *                       type: integer
+ *                     downloaded_media:
+ *                       type: integer
+ *                     download_percentage:
+ *                       type: integer
+ *                 search:
+ *                   type: object
+ *                   properties:
+ *                     index_name:
+ *                       type: string
+ *                     total_documents:
+ *                       type: integer
+ *                     is_indexing:
+ *                       type: boolean
+ *       500:
+ *         description: Failed to fetch status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.get('/', async (_req: Request, res: Response) => {
     try {
         // Get database stats

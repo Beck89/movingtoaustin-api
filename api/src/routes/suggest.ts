@@ -3,6 +3,66 @@ import searchClient, { INDEX_NAME } from '../search.js';
 
 const router = Router();
 
+/**
+ * @swagger
+ * /suggest:
+ *   get:
+ *     summary: Get search suggestions
+ *     description: Typeahead/autocomplete suggestions for property search based on address, city, postal code, or listing ID
+ *     tags: [Search]
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Search query for suggestions
+ *         example: "78704"
+ *     responses:
+ *       200:
+ *         description: Suggestions retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 suggestions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       listing_key:
+ *                         type: string
+ *                       listing_id:
+ *                         type: string
+ *                       label:
+ *                         type: string
+ *                       city:
+ *                         type: string
+ *                       state:
+ *                         type: string
+ *                       postal_code:
+ *                         type: string
+ *                       location:
+ *                         type: object
+ *                         properties:
+ *                           lat:
+ *                             type: number
+ *                           lng:
+ *                             type: number
+ *       400:
+ *         description: Missing required query parameter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Suggestion failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.get('/', async (req: Request, res: Response) => {
     try {
         const { q } = req.query;

@@ -3,6 +3,41 @@ import pool from '../db.js';
 
 const router = Router();
 
+/**
+ * @swagger
+ * /listings/{listing_key}:
+ *   get:
+ *     summary: Get property details
+ *     description: Retrieve complete details for a specific property including media, rooms, unit types, and open houses
+ *     tags: [Listings]
+ *     parameters:
+ *       - in: path
+ *         name: listing_key
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Unique listing key (e.g., ACT123456)
+ *         example: "ACT118922373"
+ *     responses:
+ *       200:
+ *         description: Property details retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/PropertyDetail'
+ *       404:
+ *         description: Listing not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Failed to fetch listing details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.get('/:listing_key', async (req: Request, res: Response) => {
     try {
         const { listing_key } = req.params;

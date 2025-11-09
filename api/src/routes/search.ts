@@ -17,6 +17,94 @@ interface SearchQuery {
     limit?: string;
 }
 
+/**
+ * @swagger
+ * /listings/search:
+ *   get:
+ *     summary: Search for property listings
+ *     description: Search and filter property listings with faceted search, geospatial filtering, and full-text search
+ *     tags: [Listings]
+ *     parameters:
+ *       - in: query
+ *         name: bounds
+ *         schema:
+ *           type: string
+ *         description: Geographic bounding box as lat1,lon1,lat2,lon2
+ *         example: "30.2,-97.8,30.3,-97.7"
+ *       - in: query
+ *         name: minPrice
+ *         schema:
+ *           type: integer
+ *         description: Minimum list price
+ *         example: 200000
+ *       - in: query
+ *         name: maxPrice
+ *         schema:
+ *           type: integer
+ *         description: Maximum list price
+ *         example: 500000
+ *       - in: query
+ *         name: beds
+ *         schema:
+ *           type: integer
+ *         description: Minimum number of bedrooms
+ *         example: 3
+ *       - in: query
+ *         name: baths
+ *         schema:
+ *           type: integer
+ *         description: Minimum number of full bathrooms
+ *         example: 2
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *         description: Property status (Active, Pending, Sold, etc.)
+ *         example: "Active"
+ *       - in: query
+ *         name: city
+ *         schema:
+ *           type: string
+ *         description: City name
+ *         example: "Austin"
+ *       - in: query
+ *         name: features
+ *         schema:
+ *           type: string
+ *         description: Comma-separated list of features
+ *         example: "Pool,View"
+ *       - in: query
+ *         name: text
+ *         schema:
+ *           type: string
+ *         description: Full-text search query
+ *         example: "downtown condo"
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Page number for pagination
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *         description: Number of results per page
+ *     responses:
+ *       200:
+ *         description: Successful search results
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/SearchResponse'
+ *       500:
+ *         description: Search failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 router.get('/', async (req: Request<{}, {}, {}, SearchQuery>, res: Response) => {
     try {
         const {
