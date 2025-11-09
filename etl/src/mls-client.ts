@@ -1,10 +1,14 @@
 import { request } from 'undici';
 import { gunzipSync } from 'zlib';
 import dotenv from 'dotenv';
+import { rateLimiter } from './rate-limiter.js';
 
 dotenv.config();
 
 export async function fetchMLSData(endpoint: string, params: Record<string, string> = {}): Promise<any> {
+    // Wait for rate limit slot before making API request
+    await rateLimiter.waitForSlot();
+
     const baseUrl = process.env.MLS_BASE || 'https://api.mlsgrid.com/v2';
     const accessToken = process.env.MLS_ACCESS_TOKEN;
 

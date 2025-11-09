@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { request } from 'undici';
 import dotenv from 'dotenv';
+import { rateLimiter } from './rate-limiter.js';
 
 dotenv.config();
 
@@ -24,6 +25,9 @@ export async function downloadAndUploadMedia(
     _mediaCategory: string
 ): Promise<string> {
     try {
+        // Wait for rate limit slot before downloading from MLS Grid
+        await rateLimiter.waitForSlot();
+
         // Download from MLS
         const response = await request(mediaUrl, {
             method: 'GET',
