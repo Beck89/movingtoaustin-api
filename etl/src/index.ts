@@ -23,10 +23,10 @@ const INDEX_NAME = process.env.MEILI_INDEX || 'listings_actris_v1';
 const ORIGINATING_SYSTEM = process.env.ORIGINATING_SYSTEM || 'ACTRIS';
 const BATCH_SIZE = parseInt(process.env.ETL_BATCH_SIZE || '100', 10);
 const INTERVAL_MINUTES = parseInt(process.env.ETL_INTERVAL_MINUTES || '5', 10);
-const MAX_PROPERTIES = process.env.ETL_MAX_PROPERTIES && process.env.ETL_MAX_PROPERTIES.trim() !== '' ? parseInt(process.env.ETL_MAX_PROPERTIES, 10) : null;
-const MAX_MEMBERS = process.env.ETL_MAX_MEMBERS && process.env.ETL_MAX_MEMBERS.trim() !== '' ? parseInt(process.env.ETL_MAX_MEMBERS, 10) : null;
-const MAX_OFFICES = process.env.ETL_MAX_OFFICES && process.env.ETL_MAX_OFFICES.trim() !== '' ? parseInt(process.env.ETL_MAX_OFFICES, 10) : null;
-const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES && process.env.ETL_MAX_OPENHOUSES.trim() !== '' ? parseInt(process.env.ETL_MAX_OPENHOUSES, 10) : null;
+const MAX_PROPERTIES = process.env.ETL_MAX_PROPERTIES && process.env.ETL_MAX_PROPERTIES.trim() !== '' && process.env.ETL_MAX_PROPERTIES !== 'no_limit' ? parseInt(process.env.ETL_MAX_PROPERTIES, 10) : null;
+const MAX_MEMBERS = process.env.ETL_MAX_MEMBERS && process.env.ETL_MAX_MEMBERS.trim() !== '' && process.env.ETL_MAX_MEMBERS !== 'no_limit' ? parseInt(process.env.ETL_MAX_MEMBERS, 10) : null;
+const MAX_OFFICES = process.env.ETL_MAX_OFFICES && process.env.ETL_MAX_OFFICES.trim() !== '' && process.env.ETL_MAX_OFFICES !== 'no_limit' ? parseInt(process.env.ETL_MAX_OFFICES, 10) : null;
+const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES && process.env.ETL_MAX_OPENHOUSES.trim() !== '' && process.env.ETL_MAX_OPENHOUSES !== 'no_limit' ? parseInt(process.env.ETL_MAX_OPENHOUSES, 10) : null;
 
 // Queue for media downloads
 // Conservative settings to strictly respect MLS Grid's 2 RPS limit
