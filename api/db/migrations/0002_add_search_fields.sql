@@ -45,7 +45,7 @@ SET
   tax_annual_amount = COALESCE(tax_annual_amount, (raw->>'TaxAnnualAmount')::numeric),
   fireplaces_total = COALESCE(fireplaces_total, (raw->>'FireplacesTotal')::integer),
   street_name = COALESCE(street_name, raw->>'StreetName'),
-  bathrooms_total_integer = COALESCE(bathrooms_total_integer, (raw->>'BathroomsTotalInteger')::integer),
+  bathrooms_total_integer = COALESCE(bathrooms_total_integer, ROUND((raw->>'BathroomsTotalInteger')::numeric)::integer),
   original_entry_timestamp = COALESCE(original_entry_timestamp, (raw->>'OriginalEntryTimestamp')::timestamptz)
 WHERE raw IS NOT NULL;
 
