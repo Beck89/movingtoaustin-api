@@ -9,8 +9,9 @@ COPY tsconfig.json ./
 # Install dependencies
 RUN npm ci
 
-# Copy ETL source
+# Copy ETL source and scripts
 COPY etl ./etl
+COPY scripts ./scripts
 
 # Build TypeScript
 RUN npm run build
