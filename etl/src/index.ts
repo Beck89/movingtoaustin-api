@@ -409,7 +409,36 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
             // MLS Grid rate limits last 1 hour, so we need to be very patient
             mediaQueue.add(() =>
                 pRetry(
-                    () => downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo'),
+                    async () => {
+                        try {
+                            return await downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo');
+                        } catch (error: any) {
+                            // If URL expired, fetch fresh URL from MLS API
+                            if (error.message?.includes('expired')) {
+                                console.log(`[Media] URL expired for ${item.MediaKey}, fetching fresh URL...`);
+                                try {
+                                    const endpoint = `/Property('${listingKey}')?$expand=Media&$select=ListingKey,Media`;
+                                    const data = await fetchMLSData(endpoint, {});
+
+                                    if (data && data.Media) {
+                                        const freshMedia = data.Media.find((m: Media) => m.MediaKey === item.MediaKey);
+                                        if (freshMedia && freshMedia.MediaURL) {
+                                            // Update database with fresh URL
+                                            await pool.query(
+                                                `UPDATE mls.media SET media_url = $1, media_modification_ts = $2 WHERE media_key = $3`,
+                                                [freshMedia.MediaURL, freshMedia.MediaModificationTimestamp, item.MediaKey]
+                                            );
+                                            // Retry with fresh URL
+                                            return await downloadAndUploadMedia(freshMedia.MediaURL, listingKey, item.Order || 0, item.MediaCategory || 'Photo');
+                                        }
+                                    }
+                                } catch (refreshError) {
+                                    console.error(`[Media] Failed to refresh URL for ${item.MediaKey}:`, refreshError);
+                                }
+                            }
+                            throw error;
+                        }
+                    },
                     {
                         retries: 20,  // Many retries to handle 1-hour rate limit blocks
                         minTimeout: 60000,  // Start with 1 minute wait
@@ -433,7 +462,7 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
                     );
                 }).catch((err) => {
                     // Log all final failures (after all retries exhausted)
-                    if (!err.message?.includes('400')) {
+                    if (!err.message?.includes('400') && !err.message?.includes('expired')) {
                         console.error(`[Media] Failed after all retries ${item.MediaKey}: ${err.message}`);
                     }
                 })

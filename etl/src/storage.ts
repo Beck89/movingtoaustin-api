@@ -59,6 +59,30 @@ export async function deleteMediaForListing(listingKey: string, originatingSyste
     }
 }
 
+/**
+ * Check if a media URL has expired by parsing the expires parameter
+ */
+function isUrlExpired(url: string): boolean {
+    try {
+        const urlObj = new URL(url);
+        const expiresParam = urlObj.searchParams.get('expires');
+
+        if (!expiresParam) {
+            // No expiration parameter, assume it's valid
+            return false;
+        }
+
+        const expiresTimestamp = parseInt(expiresParam, 10);
+        const now = Math.floor(Date.now() / 1000); // Current time in seconds
+
+        // Consider expired if within 5 minutes of expiration (300 seconds buffer)
+        return expiresTimestamp <= (now + 300);
+    } catch (error) {
+        // If we can't parse the URL, assume it's not expired
+        return false;
+    }
+}
+
 export async function downloadAndUploadMedia(
     mediaUrl: string,
     listingKey: string,
@@ -66,6 +90,11 @@ export async function downloadAndUploadMedia(
     _mediaCategory: string
 ): Promise<string> {
     try {
+        // Check if URL is expired before attempting download
+        if (isUrlExpired(mediaUrl)) {
+            throw new Error('Media URL has expired - needs refresh from MLS API');
+        }
+
         // Wait for rate limit slot before downloading from MLS Grid
         await rateLimiter.waitForSlot();
 
