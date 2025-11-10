@@ -403,10 +403,15 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
  *       - in: query
  *         name: items_per_page
  *         schema:
- *           type: integer
+ *           oneOf:
+ *             - type: integer
+ *               minimum: 1
+ *               maximum: 10000
+ *             - type: string
+ *               enum: [all]
  *           default: 20
- *           maximum: 100
- *         description: Number of results per page
+ *         description: Number of results per page (1-10000) or "all" for all results (max 10000)
+ *         example: 20
  *
  *       # Sorting
  *       - in: query
