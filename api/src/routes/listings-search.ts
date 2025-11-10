@@ -341,11 +341,11 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
             };
 
             if (daysMap[query.price_reduction]) {
-                conditions.push(`p.major_change_type = 'Price Change'`);
+                conditions.push(`p.major_change_type IN ('Price Change', 'Price Decrease')`);
                 conditions.push(`p.major_change_timestamp >= NOW() - INTERVAL '${daysMap[query.price_reduction]} days'`);
             } else if (query.price_reduction.startsWith('over_')) {
                 const months = parseInt(query.price_reduction.replace('over_', '').replace('_months', '').replace('_month', ''));
-                conditions.push(`p.major_change_type = 'Price Change'`);
+                conditions.push(`p.major_change_type IN ('Price Change', 'Price Decrease')`);
                 conditions.push(`p.major_change_timestamp < NOW() - INTERVAL '${months} months'`);
             }
         }
@@ -782,11 +782,12 @@ router.get('/', async (req: Request<Record<string, never>, Record<string, never>
                 p.high_school_district,
                 p.subdivision_name,
                 p.photo_count as photos_count,
-                -- Primary photo URL with fallback to first media item
+                -- Primary photo URL - ONLY return S3 URLs (MLS compliance - no hotlinking)
                 COALESCE(
                     p.primary_photo_url,
-                    (SELECT m.media_url FROM mls.media m
+                    (SELECT m.local_url FROM mls.media m
                      WHERE m.listing_key = p.listing_key
+                     AND m.local_url IS NOT NULL
                      AND (m.media_category = 'Photo' OR m.media_category IS NULL)
                      ORDER BY m.order_sequence ASC
                      LIMIT 1)
