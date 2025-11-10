@@ -4,16 +4,8 @@ import searchClient, { INDEX_NAME } from '../search.js';
 
 const router = Router();
 
-// Property type mapping from simplified types to MLS PropertySubType values
-const PROPERTY_TYPE_MAP: Record<string, string[]> = {
-    home: ['Single Family Residence', 'Residential', 'Single Family'],
-    condo: ['Condominium', 'Condo'],
-    townhouse: ['Townhouse', 'Townhome'],
-    lot: ['Lots/Land', 'Land', 'Residential Lots/Land'],
-    farm_ranch: ['Farm', 'Ranch', 'Farm/Ranch'],
-    multi_family: ['Multi-Family', 'Duplex', 'Triplex', 'Fourplex'],
-    commercial: ['Commercial'],
-};
+// No mapping needed - we'll use exact MLS values
+// Users can filter by exact property_type and property_sub_type values from MLS
 
 // Valid sort fields mapping
 const SORT_FIELD_MAP: Record<string, string> = {
@@ -42,7 +34,8 @@ interface SearchQuery {
     max_longitude?: string;
 
     // Property Characteristics
-    property_type?: string;
+    property_type?: string;        // MLS PropertyType field (Residential, Residential Lease, Land, etc.)
+    property_sub_type?: string;    // MLS PropertySubType field (Single Family Residence, Condo, etc.)
     min_price?: string;
     max_price?: string;
     min_bedrooms?: string;
@@ -139,20 +132,20 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
         paramIndex += 4;
     }
 
-    // Property type
+    // Property type filter (exact MLS PropertyType values)
     if (query.property_type) {
         const types = query.property_type.split(',').map(t => t.trim());
-        const subTypes: string[] = [];
-        types.forEach(type => {
-            if (PROPERTY_TYPE_MAP[type]) {
-                subTypes.push(...PROPERTY_TYPE_MAP[type]);
-            }
-        });
-        if (subTypes.length > 0) {
-            conditions.push(`p.property_sub_type = ANY($${paramIndex})`);
-            params.push(subTypes);
-            paramIndex++;
-        }
+        conditions.push(`p.property_type = ANY($${paramIndex})`);
+        params.push(types);
+        paramIndex++;
+    }
+
+    // Property sub-type filter (exact MLS PropertySubType values)
+    if (query.property_sub_type) {
+        const types = query.property_sub_type.split(',').map(t => t.trim());
+        conditions.push(`p.property_sub_type = ANY($${paramIndex})`);
+        params.push(types);
+        paramIndex++;
     }
 
     // Price range
@@ -458,8 +451,14 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
  *         name: property_type
  *         schema:
  *           type: string
- *         description: Property types (comma-separated). Values - home, condo, townhouse, lot, farm_ranch, multi_family, commercial
- *         example: "home,condo"
+ *         description: MLS PropertyType (comma-separated). Values - Residential, Residential Lease, Land, Farm, Commercial Sale, Commercial Lease, Residential Income
+ *         example: "Residential,Land"
+ *       - in: query
+ *         name: property_sub_type
+ *         schema:
+ *           type: string
+ *         description: MLS PropertySubType (comma-separated). Values - Single Family Residence, Condominium, Townhouse, Unimproved Land, Ranch, Duplex, Office, etc.
+ *         example: "Single Family Residence,Condominium"
  *       - in: query
  *         name: min_price
  *         schema:
