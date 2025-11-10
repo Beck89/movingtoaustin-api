@@ -99,6 +99,8 @@ export async function downloadAndUploadMedia(
     orderSequence: number,
     _mediaCategory: string
 ): Promise<string> {
+    const startTime = Date.now();
+
     try {
         // Check if URL is expired before attempting download
         if (isUrlExpired(mediaUrl)) {
@@ -107,6 +109,9 @@ export async function downloadAndUploadMedia(
 
         // Wait for rate limit slot before downloading from MLS Grid
         await rateLimiter.waitForSlot();
+
+        const afterWait = Date.now();
+        console.log(`[Media Download] Starting ${listingKey}/${orderSequence} (waited ${afterWait - startTime}ms)`);
 
         // Download from MLS
         const response = await request(mediaUrl, {
@@ -156,11 +161,14 @@ export async function downloadAndUploadMedia(
         }));
 
         // Return CDN URL
+        const totalTime = Date.now() - startTime;
+        console.log(`[Media Download] Completed ${listingKey}/${orderSequence} in ${totalTime}ms`);
         return `${CDN_BASE}/${key}`;
     } catch (error) {
         // Enhanced error logging with context
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[Media Download Failed] Listing: ${listingKey}, Order: ${orderSequence}, URL: ${mediaUrl.substring(0, 100)}..., Error: ${errorMessage}`);
+        const totalTime = Date.now() - startTime;
+        console.error(`[Media Download Failed] Listing: ${listingKey}, Order: ${orderSequence}, Time: ${totalTime}ms, URL: ${mediaUrl.substring(0, 100)}..., Error: ${errorMessage}`);
         throw error;
     }
 }

@@ -15,11 +15,31 @@ export class RateLimiter {
     private hourlyStartTime = Date.now();
     private readonly maxRequestsPerHour = 7000; // Leave 200 buffer
     private readonly minDelayMs = 500; // Minimum 500ms between requests (2 RPS)
+    private lastRequestTime = 0;
+    private recentRequests: number[] = []; // Track last 10 request timestamps
 
     /**
      * Wait if necessary to respect rate limits, then increment counter
      */
     async waitForSlot(): Promise<void> {
+        const now = Date.now();
+
+        // Calculate time since last request
+        const timeSinceLastRequest = this.lastRequestTime ? now - this.lastRequestTime : 0;
+
+        // Log request timing for debugging
+        if (this.requestCount % 10 === 0) {
+            const recentRate = this.recentRequests.length > 1
+                ? (this.recentRequests.length - 1) / ((now - this.recentRequests[0]) / 1000)
+                : 0;
+            console.log(`[Rate Limiter] Request #${this.requestCount}, Last: ${timeSinceLastRequest}ms ago, Recent rate: ${recentRate.toFixed(2)} RPS`);
+        }
+
+        // Track recent requests (keep last 10)
+        this.recentRequests.push(now);
+        if (this.recentRequests.length > 10) {
+            this.recentRequests.shift();
+        }
         // Check hourly limit
         const elapsed = Date.now() - this.hourlyStartTime;
         if (this.requestCount >= this.maxRequestsPerHour) {
@@ -37,7 +57,8 @@ export class RateLimiter {
         // Enforce minimum delay between requests (max 2 RPS)
         await new Promise(resolve => setTimeout(resolve, this.minDelayMs));
 
-        // Increment counter
+        // Update last request time and increment counter
+        this.lastRequestTime = Date.now();
         this.requestCount++;
     }
 
