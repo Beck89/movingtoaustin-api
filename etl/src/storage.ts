@@ -73,12 +73,22 @@ function isUrlExpired(url: string): boolean {
         }
 
         const expiresTimestamp = parseInt(expiresParam, 10);
-        const now = Math.floor(Date.now() / 1000); // Current time in seconds
+        const nowTimestamp = Math.floor(Date.now() / 1000); // Current time in seconds
 
-        // Consider expired if within 5 minutes of expiration (300 seconds buffer)
-        return expiresTimestamp <= (now + 300);
+        // URL is expired if the expiration time is in the past
+        // Add 5 minute buffer (300 seconds) to catch URLs about to expire
+        const isExpired = expiresTimestamp < (nowTimestamp + 300);
+
+        if (isExpired) {
+            const expiresDate = new Date(expiresTimestamp * 1000);
+            const now = new Date();
+            console.log(`[URL Check] URL expired or expiring soon. Expires: ${expiresDate.toISOString()}, Now: ${now.toISOString()}`);
+        }
+
+        return isExpired;
     } catch (error) {
-        // If we can't parse the URL, assume it's not expired
+        // If we can't parse the URL, assume it's not expired and let the download attempt proceed
+        console.log(`[URL Check] Could not parse URL expiration, assuming valid: ${error}`);
         return false;
     }
 }

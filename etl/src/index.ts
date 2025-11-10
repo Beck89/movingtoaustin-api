@@ -413,8 +413,8 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
                         try {
                             return await downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo');
                         } catch (error: any) {
-                            // If URL expired, fetch fresh URL from MLS API
-                            if (error.message?.includes('expired')) {
+                            // If URL expired or got 400 error, fetch fresh URL from MLS API
+                            if (error.message?.includes('expired') || error.message?.includes('400')) {
                                 console.log(`[Media] URL expired for ${item.MediaKey}, fetching fresh URL...`);
                                 try {
                                     const endpoint = `/Property('${listingKey}')?$expand=Media&$select=ListingKey,Media`;
