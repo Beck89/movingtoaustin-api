@@ -30,11 +30,11 @@ const MAX_OFFICES = process.env.ETL_MAX_OFFICES && process.env.ETL_MAX_OFFICES.t
 const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES && process.env.ETL_MAX_OPENHOUSES.trim() !== '' && process.env.ETL_MAX_OPENHOUSES !== 'no_limit' ? parseInt(process.env.ETL_MAX_OPENHOUSES, 10) : null;
 
 // Queue for media downloads
-// Conservative settings to strictly respect MLS Grid's 2 RPS limit
+// Settings to respect MLS Grid's 2 RPS limit
 const mediaQueue = new PQueue({
-    concurrency: 1,  // Process one at a time to avoid race conditions with rate limiter
+    concurrency: 2,  // Process 2 at a time
     interval: 1000,  // 1 second interval
-    intervalCap: 1,  // Max 1 request per second (well under 2 RPS limit)
+    intervalCap: 2,  // Max 2 requests per second (at MLS Grid's limit)
 });
 
 interface Property {
