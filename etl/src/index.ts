@@ -23,6 +23,7 @@ const INDEX_NAME = process.env.MEILI_INDEX || 'listings_actris_v1';
 const ORIGINATING_SYSTEM = process.env.ORIGINATING_SYSTEM || 'ACTRIS';
 const BATCH_SIZE = parseInt(process.env.ETL_BATCH_SIZE || '100', 10);
 const INTERVAL_MINUTES = parseInt(process.env.ETL_INTERVAL_MINUTES || '5', 10);
+const MEDIA_RECOVERY_BATCH_SIZE = parseInt(process.env.ETL_MEDIA_RECOVERY_BATCH_SIZE || '10', 10);
 const MAX_PROPERTIES = process.env.ETL_MAX_PROPERTIES && process.env.ETL_MAX_PROPERTIES.trim() !== '' && process.env.ETL_MAX_PROPERTIES !== 'no_limit' ? parseInt(process.env.ETL_MAX_PROPERTIES, 10) : null;
 const MAX_MEMBERS = process.env.ETL_MAX_MEMBERS && process.env.ETL_MAX_MEMBERS.trim() !== '' && process.env.ETL_MAX_MEMBERS !== 'no_limit' ? parseInt(process.env.ETL_MAX_MEMBERS, 10) : null;
 const MAX_OFFICES = process.env.ETL_MAX_OFFICES && process.env.ETL_MAX_OFFICES.trim() !== '' && process.env.ETL_MAX_OFFICES !== 'no_limit' ? parseInt(process.env.ETL_MAX_OFFICES, 10) : null;
@@ -1158,8 +1159,8 @@ async function retryFailedMediaDownloads(): Promise<void> {
                   AND m.local_url IS NOT NULL
               ) < p.photo_count
             ORDER BY p.modification_timestamp DESC
-            LIMIT 10
-        `);
+            LIMIT $1
+        `, [MEDIA_RECOVERY_BATCH_SIZE]);
 
         if (result.rows.length === 0) {
             console.log('✅ All properties have their media downloaded');
