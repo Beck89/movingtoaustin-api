@@ -31,10 +31,11 @@ const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES && process.env.ETL_MAX_OPE
 
 // Queue for media downloads
 // Settings to respect MLS Grid's 2 RPS limit
+// Use concurrency:1 because rate limiter handles the 500ms delay
 const mediaQueue = new PQueue({
-    concurrency: 2,  // Process 2 at a time
+    concurrency: 1,  // Process one at a time (rate limiter adds 500ms delay)
     interval: 1000,  // 1 second interval
-    intervalCap: 2,  // Max 2 requests per second (at MLS Grid's limit)
+    intervalCap: 2,  // Max 2 requests per second
 });
 
 interface Property {
