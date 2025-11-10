@@ -669,7 +669,10 @@ router.get('/', async (req: Request<Record<string, never>, Record<string, never>
 
         // Pagination
         const page = parseInt(query.page || '1', 10);
-        const itemsPerPage = Math.min(parseInt(query.items_per_page || '20', 10), 100);
+        // Support "all" or very large number to get all results (capped at 10000 for safety)
+        const itemsPerPage = query.items_per_page === 'all'
+            ? 10000
+            : Math.min(parseInt(query.items_per_page || '20', 10), 10000);
         const offset = (page - 1) * itemsPerPage;
 
         // Sorting
