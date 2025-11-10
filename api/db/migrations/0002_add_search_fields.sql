@@ -12,16 +12,16 @@ ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS new_construction_yn boolean;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS pool_private_yn boolean;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS waterfront_yn boolean;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS levels text[];
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS garage_spaces numeric(4,1);
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS parking_total numeric(4,1);
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS garage_spaces numeric(6,1);
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS parking_total numeric(6,1);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS elementary_school text;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS high_school_district text;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS association_fee numeric(10,2);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS association_fee_frequency text;
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS tax_annual_amount numeric(12,2);
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS fireplaces_total numeric(4,1);
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS fireplaces_total numeric(6,1);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS street_name text;
-ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS bathrooms_total_integer numeric(4,1);
+ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS bathrooms_total_integer numeric(6,1);
 ALTER TABLE mls.properties ADD COLUMN IF NOT EXISTS original_entry_timestamp timestamptz;
 
 -- Backfill data from raw JSONB column where possible
