@@ -51,14 +51,14 @@ async function fixS3Permissions() {
                 if (!obj.Key) continue;
 
                 try {
-                    // Copy object to itself with updated cache control
-                    // R2 doesn't support ACLs - public access is configured at bucket level
+                    // Copy object to itself with public-read ACL
+                    // This updates the ACL to make the object publicly accessible
                     await s3Client.send(new CopyObjectCommand({
                         Bucket: BUCKET,
-                        CopySource: `${BUCKET}/${obj.Key}`,
+                        CopySource: encodeURIComponent(`${BUCKET}/${obj.Key}`),
                         Key: obj.Key,
+                        ACL: 'public-read',
                         MetadataDirective: 'COPY', // Keep existing metadata
-                        CacheControl: 'public, max-age=31536000',
                     }));
 
                     totalProcessed++;
