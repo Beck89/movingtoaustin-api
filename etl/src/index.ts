@@ -564,12 +564,13 @@ async function configureMeilisearchIndex(): Promise<void> {
 
             console.log('  - Setting searchable attributes...');
             await index.updateSearchableAttributes([
+                'listing_key',      // Add listing_key for ID search
+                'listing_id',       // Keep listing_id as well
                 'address_full',
                 'street_name',
                 'city',
                 'postal_code',
                 'subdivision_name',
-                'listing_id',
                 'remarks_public',
                 'elementary_school',
                 'high_school_district',
