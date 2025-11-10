@@ -106,13 +106,14 @@ export async function downloadAndUploadMedia(
         const originatingSystem = process.env.ORIGINATING_SYSTEM?.toLowerCase() || 'actris';
         const key = `${STORAGE_PREFIX}/${originatingSystem}/${listingKey}/${orderSequence}.${ext}`;
 
-        // Upload to S3/R2
+        // Upload to S3/R2 with public-read ACL
         await s3Client.send(new PutObjectCommand({
             Bucket: BUCKET,
             Key: key,
             Body: buffer,
             ContentType: contentType,
             CacheControl: 'public, max-age=31536000', // 1 year
+            ACL: 'public-read', // Make files publicly accessible
         }));
 
         // Return CDN URL
