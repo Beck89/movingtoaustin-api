@@ -519,7 +519,22 @@ async function configureMeilisearchIndex(): Promise<void> {
             }
         }
 
-        // Only configure if filterableAttributes is empty (not yet configured)
+        // Always update searchable attributes to ensure listing_key is included
+        console.log('  - Updating searchable attributes...');
+        await index.updateSearchableAttributes([
+            'listing_key',      // Add listing_key for ID search
+            'listing_id',       // Keep listing_id as well
+            'address_full',
+            'street_name',
+            'city',
+            'postal_code',
+            'subdivision_name',
+            'remarks_public',
+            'elementary_school',
+            'high_school_district',
+        ]);
+
+        // Only configure filterable/sortable if not yet configured
         if (!settings || !settings.filterableAttributes || settings.filterableAttributes.length === 0) {
             console.log('  - Setting filterable attributes...');
             await index.updateFilterableAttributes([
