@@ -393,8 +393,276 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
 }
 
 /**
- * GET /api/listings/search
- * Comprehensive search endpoint with all filters, sorting, and pagination
+ * @swagger
+ * /api/listings/search:
+ *   get:
+ *     summary: Comprehensive property search with advanced filtering
+ *     description: Search real estate listings with extensive filtering, sorting, and pagination. Supports geographic bounding box, property characteristics, amenities, status filters, and text search.
+ *     tags: [Search]
+ *     parameters:
+ *       # Pagination
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *         description: Current page number (1-indexed)
+ *       - in: query
+ *         name: items_per_page
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *           maximum: 100
+ *         description: Number of results per page
+ *
+ *       # Sorting
+ *       - in: query
+ *         name: sort_by
+ *         schema:
+ *           type: string
+ *           enum: [list_date, list_price, living_area, price_per_sqft, status, bedrooms_total, bathrooms_total]
+ *           default: list_date
+ *         description: Field to sort by
+ *       - in: query
+ *         name: sort_direction
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *           default: desc
+ *         description: Sort direction
+ *
+ *       # Geographic
+ *       - in: query
+ *         name: min_latitude
+ *         schema:
+ *           type: number
+ *         description: Minimum latitude for bounding box (all 4 lat/long required together)
+ *       - in: query
+ *         name: max_latitude
+ *         schema:
+ *           type: number
+ *         description: Maximum latitude for bounding box
+ *       - in: query
+ *         name: min_longitude
+ *         schema:
+ *           type: number
+ *         description: Minimum longitude for bounding box
+ *       - in: query
+ *         name: max_longitude
+ *         schema:
+ *           type: number
+ *         description: Maximum longitude for bounding box
+ *
+ *       # Property Characteristics
+ *       - in: query
+ *         name: property_type
+ *         schema:
+ *           type: string
+ *         description: Property types (comma-separated). Values - home, condo, townhouse, lot, farm_ranch, multi_family, commercial
+ *         example: "home,condo"
+ *       - in: query
+ *         name: min_price
+ *         schema:
+ *           type: integer
+ *         description: Minimum list price
+ *       - in: query
+ *         name: max_price
+ *         schema:
+ *           type: integer
+ *         description: Maximum list price
+ *       - in: query
+ *         name: min_bedrooms
+ *         schema:
+ *           type: integer
+ *         description: Minimum bedrooms
+ *       - in: query
+ *         name: max_bedrooms
+ *         schema:
+ *           type: integer
+ *         description: Maximum bedrooms
+ *       - in: query
+ *         name: min_bathrooms
+ *         schema:
+ *           type: number
+ *         description: Minimum bathrooms (supports 0.5 increments)
+ *       - in: query
+ *         name: max_bathrooms
+ *         schema:
+ *           type: number
+ *         description: Maximum bathrooms
+ *       - in: query
+ *         name: min_sqft
+ *         schema:
+ *           type: integer
+ *         description: Minimum living area (square feet)
+ *       - in: query
+ *         name: max_sqft
+ *         schema:
+ *           type: integer
+ *         description: Maximum living area
+ *       - in: query
+ *         name: min_lot_size
+ *         schema:
+ *           type: number
+ *         description: Minimum lot size (acres)
+ *       - in: query
+ *         name: max_lot_size
+ *         schema:
+ *           type: number
+ *         description: Maximum lot size (acres)
+ *       - in: query
+ *         name: min_year_built
+ *         schema:
+ *           type: integer
+ *         description: Minimum year built
+ *       - in: query
+ *         name: max_year_built
+ *         schema:
+ *           type: integer
+ *         description: Maximum year built
+ *       - in: query
+ *         name: min_price_per_sqft
+ *         schema:
+ *           type: number
+ *         description: Minimum price per square foot
+ *       - in: query
+ *         name: max_price_per_sqft
+ *         schema:
+ *           type: number
+ *         description: Maximum price per square foot
+ *
+ *       # Amenities
+ *       - in: query
+ *         name: pool
+ *         schema:
+ *           type: boolean
+ *         description: Has private pool
+ *       - in: query
+ *         name: garage
+ *         schema:
+ *           type: boolean
+ *         description: Has garage
+ *       - in: query
+ *         name: min_garage_spaces
+ *         schema:
+ *           type: integer
+ *         description: Minimum garage spaces
+ *       - in: query
+ *         name: max_garage_spaces
+ *         schema:
+ *           type: integer
+ *         description: Maximum garage spaces
+ *       - in: query
+ *         name: waterfront
+ *         schema:
+ *           type: boolean
+ *         description: Waterfront property
+ *       - in: query
+ *         name: fireplace
+ *         schema:
+ *           type: boolean
+ *         description: Has fireplace
+ *       - in: query
+ *         name: new_construction
+ *         schema:
+ *           type: boolean
+ *         description: New construction
+ *
+ *       # Status & Timing
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *         description: Listing status (comma-separated). Values - active, pending, sold
+ *         example: "active,pending"
+ *       - in: query
+ *         name: days_on_market
+ *         schema:
+ *           type: integer
+ *         description: Maximum days on market
+ *       - in: query
+ *         name: price_reduction
+ *         schema:
+ *           type: string
+ *           enum: [any, last_day, last_3_days, last_7_days, last_14_days, last_30_days, over_1_month, over_2_months, over_3_months]
+ *         description: Price reduction timeframe
+ *       - in: query
+ *         name: open_house
+ *         schema:
+ *           type: string
+ *           enum: [this_weekend, next_weekend, all]
+ *         description: Open house filter
+ *
+ *       # Search
+ *       - in: query
+ *         name: keywords
+ *         schema:
+ *           type: string
+ *         description: Text search across address, city, subdivision, remarks, schools
+ *         example: "lake travis"
+ *
+ *     responses:
+ *       200:
+ *         description: Successful search results
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       listing_key:
+ *                         type: string
+ *                       standard_status:
+ *                         type: string
+ *                       list_price:
+ *                         type: string
+ *                       original_list_price:
+ *                         type: string
+ *                       bedrooms_total:
+ *                         type: integer
+ *                       bathrooms_total:
+ *                         type: number
+ *                       living_area:
+ *                         type: integer
+ *                       price_per_sqft:
+ *                         type: string
+ *                       days_on_market:
+ *                         type: integer
+ *                       price_reduced:
+ *                         type: boolean
+ *                       pool_private:
+ *                         type: boolean
+ *                       garage_spaces:
+ *                         type: number
+ *                       primary_photo_url:
+ *                         type: string
+ *                       open_houses:
+ *                         type: array
+ *                         items:
+ *                           type: object
+ *                 metadata:
+ *                   type: object
+ *                   properties:
+ *                     total_listings_count:
+ *                       type: integer
+ *                     filtered_listings_count:
+ *                       type: integer
+ *                     current_page:
+ *                       type: integer
+ *                     total_pages:
+ *                       type: integer
+ *                     items_per_page:
+ *                       type: integer
+ *                     sort_by:
+ *                       type: string
+ *                     sort_direction:
+ *                       type: string
+ *       500:
+ *         description: Search error
  */
 router.get('/', async (req: Request<Record<string, never>, Record<string, never>, Record<string, never>, SearchQuery>, res: Response) => {
     try {
