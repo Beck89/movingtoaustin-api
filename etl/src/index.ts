@@ -417,7 +417,7 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
                             if (error.message?.includes('expired') || error.message?.includes('400')) {
                                 console.log(`[Media] URL expired for ${item.MediaKey}, fetching fresh URL...`);
                                 try {
-                                    const endpoint = `/Property('${listingKey}')?$expand=Media&$select=ListingKey,Media`;
+                                    const endpoint = `/Property('${listingKey}')?$expand=Media&$select=ListingKey`;
                                     const data = await fetchMLSData(endpoint, {});
 
                                     if (data && data.Media) {
@@ -1202,7 +1202,7 @@ async function retryFailedMediaDownloads(): Promise<void> {
         // Re-fetch each property with fresh Media URLs
         for (const row of result.rows) {
             try {
-                const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey,Media`;
+                const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey`;
                 const data = await fetchMLSData(endpoint, {});
 
                 if (data && data.Media && data.Media.length > 0) {
