@@ -62,7 +62,7 @@ async function testAPI() {
             process.exit(1);
         }
 
-        const data = await propertyRes.json();
+        const data = await propertyRes.json() as { value?: any[] };
         console.log('✅ Property fetch successful');
         console.log(`   Found ${data.value?.length || 0} properties`);
 
