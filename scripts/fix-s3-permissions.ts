@@ -1,4 +1,4 @@
-import { S3Client, ListObjectsV2Command, CopyObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, ListObjectsV2Command, PutObjectAclCommand } from '@aws-sdk/client-s3';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -51,14 +51,12 @@ async function fixS3Permissions() {
                 if (!obj.Key) continue;
 
                 try {
-                    // Copy object to itself with public-read ACL
-                    // This updates the ACL to make the object publicly accessible
-                    await s3Client.send(new CopyObjectCommand({
+                    // Update ACL directly using PutObjectAclCommand
+                    // This is the proper way to change permissions in DigitalOcean Spaces
+                    await s3Client.send(new PutObjectAclCommand({
                         Bucket: BUCKET,
-                        CopySource: encodeURIComponent(`${BUCKET}/${obj.Key}`),
                         Key: obj.Key,
                         ACL: 'public-read',
-                        MetadataDirective: 'COPY', // Keep existing metadata
                     }));
 
                     totalProcessed++;
