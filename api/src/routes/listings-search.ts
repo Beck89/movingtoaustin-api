@@ -141,7 +141,8 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
     }
 
     // Property sub-type filter (exact MLS PropertySubType values)
-    if (query.property_sub_type) {
+    // Skip if value is "all" (means no filter)
+    if (query.property_sub_type && query.property_sub_type !== 'all') {
         const types = query.property_sub_type.split(',').map(t => t.trim());
         conditions.push(`p.property_sub_type = ANY($${paramIndex})`);
         params.push(types);
