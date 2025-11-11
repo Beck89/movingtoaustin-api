@@ -359,8 +359,10 @@ function transformToCleanStructure(
     }));
 
     // Transform media
+    // Note: media_category may be null/empty, so we include all media records
+    // and rely on the presence of local_url or media_url to determine if it's valid
     const photos: Photo[] = media
-        .filter(m => m.media_category === 'Photo')
+        .filter(m => (m.local_url || m.media_url)) // Include if has any URL
         .map(m => ({
             order: m.order_sequence || 0,
             url: m.local_url || m.media_url || '',
