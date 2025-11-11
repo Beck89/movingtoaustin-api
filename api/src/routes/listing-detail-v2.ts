@@ -284,17 +284,29 @@ function transformAppliances(appliances: string[]): string[] {
 /**
  * Extract date from ISO timestamp
  */
-function extractDate(isoString: string | null): string | null {
+function extractDate(isoString: string | null | Date): string | null {
     if (!isoString) return null;
-    return isoString.split('T')[0];
+    // Handle Date objects
+    if (isoString instanceof Date) {
+        return isoString.toISOString().split('T')[0];
+    }
+    // Handle strings
+    const str = String(isoString);
+    return str.split('T')[0];
 }
 
 /**
  * Extract time from ISO timestamp
  */
-function extractTime(isoString: string | null): string | null {
+function extractTime(isoString: string | null | Date): string | null {
     if (!isoString) return null;
-    const parts = isoString.split('T');
+    // Handle Date objects
+    if (isoString instanceof Date) {
+        isoString = isoString.toISOString();
+    }
+    // Handle strings
+    const str = String(isoString);
+    const parts = str.split('T');
     if (parts.length < 2) return null;
     return parts[1].replace('Z', '').split('.')[0];
 }
