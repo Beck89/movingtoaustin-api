@@ -605,15 +605,23 @@ router.get('/', async (req: Request, res: Response) => {
             const addressSearch = String(address).replace(/-/g, ' ');
             const citySearch = String(city).replace(/-/g, ' ');
 
-            // Search by address and city (case-insensitive)
+            console.log(`[Address Lookup] Searching for address: "${addressSearch}", city: "${citySearch}"`);
+
+            // Search by address and city (case-insensitive, handles multiple spaces)
+            // Using REGEXP_REPLACE to normalize multiple spaces to single space
             propertyResult = await pool.query(
                 `SELECT * FROM mls.properties
                  WHERE mlg_can_view = true
-                 AND LOWER(TRIM(address_full)) = LOWER(TRIM($1))
+                 AND LOWER(TRIM(REGEXP_REPLACE(address_full, '\\s+', ' ', 'g'))) = LOWER(TRIM(REGEXP_REPLACE($1, '\\s+', ' ', 'g')))
                  AND LOWER(TRIM(city)) = LOWER(TRIM($2))
                  LIMIT 1`,
                 [addressSearch, citySearch]
             );
+
+            console.log(`[Address Lookup] Found ${propertyResult.rows.length} results`);
+            if (propertyResult.rows.length > 0) {
+                console.log(`[Address Lookup] Matched listing: ${propertyResult.rows[0].listing_key}`);
+            }
         } else {
             return res.status(400).json({
                 error: 'Invalid parameters. Must provide either listing_id or both address and city.'
