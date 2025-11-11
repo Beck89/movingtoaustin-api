@@ -7,13 +7,61 @@ The new `/api/listings/{listing_key}` endpoint provides property details in a cl
 ## Endpoint
 
 ```
-GET /api/listings/{listing_key}
+GET /api/listings
+```
+
+The endpoint supports two lookup methods using query parameters:
+
+### 1. By Listing ID
+
+```bash
+GET /api/listings?listing_id={listing_key}
 ```
 
 **Example:**
 ```bash
-curl "http://localhost:3000/api/listings/ACT209777414"
+curl "http://localhost:3000/api/listings?listing_id=ACT209777414"
 ```
+
+### 2. By Address + City
+
+```bash
+GET /api/listings?address={address}&city={city}
+```
+
+**Examples:**
+```bash
+# Single-word city
+curl "http://localhost:3000/api/listings?address=508-echo-pass&city=liberty-hill"
+
+# Multi-word address
+curl "http://localhost:3000/api/listings?address=123-main-street&city=austin"
+```
+
+### Query Parameters
+
+| Parameter | Type | Required | Description | Example |
+|-----------|------|----------|-------------|---------|
+| `listing_id` | string | Conditional* | MLS listing key | `ACT209777414` |
+| `address` | string | Conditional** | Property address (hyphens for spaces) | `508-echo-pass` |
+| `city` | string | Conditional** | City name (hyphens for spaces) | `liberty-hill` |
+
+**Conditional Requirements:**
+- *Use `listing_id` alone, OR
+- **Use both `address` AND `city` together
+
+### Address Format Guidelines
+
+When using address lookup:
+- ✅ Replace all spaces with hyphens: `123 Main St` → `123-main-st`
+- ✅ Case-insensitive matching
+- ✅ Both address and city are required together
+- ✅ Prevents duplicate matches by requiring city
+
+**Format Examples:**
+- Address: `508-echo-pass`, City: `liberty-hill`
+- Address: `123-main-street`, City: `austin`
+- Address: `1234-oak-tree-lane`, City: `round-rock`
 
 ---
 
@@ -489,6 +537,20 @@ ISO timestamps like `"2025-11-15T18:00:00.000Z"` are split into:
 
 ## Error Responses
 
+### 400 - Bad Request
+
+```json
+{
+  "error": "Invalid parameters. Must provide either listing_id or both address and city."
+}
+```
+
+**Causes:**
+- No parameters provided
+- Only `address` provided without `city`
+- Only `city` provided without `address`
+- Both `listing_id` and `address`/`city` provided together
+
 ### 404 - Not Found
 
 ```json
@@ -498,7 +560,8 @@ ISO timestamps like `"2025-11-15T18:00:00.000Z"` are split into:
 ```
 
 **Causes:**
-- Invalid `listing_key`
+- Invalid `listing_id`
+- No property matches the `address` + `city` combination
 - Listing has `mlg_can_view = false`
 
 ### 500 - Server Error
@@ -508,6 +571,10 @@ ISO timestamps like `"2025-11-15T18:00:00.000Z"` are split into:
   "error": "Failed to fetch listing details"
 }
 ```
+
+**Causes:**
+- Database connection error
+- Internal server error
 
 ---
 
@@ -534,66 +601,21 @@ The endpoint performs 4 database queries:
 
 ---
 
-## Migration from v1
-
-### Old Endpoint (v1)
-```bash
-GET /listings/ACT209777414
-```
-
-**Response:**
-```json
-{
-  "property": { /* raw database fields */ },
-  "media": [ /* array */ ],
-  "rooms": [ /* array */ ],
-  "unit_types": [ /* array */ ],
-  "open_houses": [ /* array */ ]
-}
-```
-
-### New Endpoint (v2)
-```bash
-GET /api/listings/ACT209777414
-```
-
-**Response:**
-```json
-{
-  "listing": {
-    "ids": { /* organized */ },
-    "status": { /* organized */ },
-    "pricing": { /* with calculations */ },
-    /* ... 17 more organized sections ... */
-  }
-}
-```
-
-### Key Mapping Changes
-
-| v1 Field | v2 Location |
-|----------|-------------|
-| `property.listing_key` | `listing.ids.listing_key` |
-| `property.list_price` | `listing.pricing.current_price` |
-| `property.bedrooms_total` | `listing.rooms.bedrooms` |
-| `property.raw.InteriorFeatures` | `listing.features.interior` |
-| `media[]` | `listing.media.photos[]` |
-| `rooms[]` | `listing.room_list[]` |
-
----
-
 ## Testing
 
 ### Test with curl
 
 ```bash
-# Get listing details
-curl "http://localhost:3000/api/listings/ACT209777414" | jq
+# Get listing details by listing ID
+curl "http://localhost:3000/api/listings?listing_id=ACT209777414" | jq
+
+# Get listing details by address + city
+curl "http://localhost:3000/api/listings?address=508-echo-pass&city=liberty-hill" | jq
 
 # Check specific sections
-curl "http://localhost:3000/api/listings/ACT209777414" | jq '.listing.pricing'
-curl "http://localhost:3000/api/listings/ACT209777414" | jq '.listing.calculated_metrics'
-curl "http://localhost:3000/api/listings/ACT209777414" | jq '.listing.features'
+curl "http://localhost:3000/api/listings?listing_id=ACT209777414" | jq '.listing.pricing'
+curl "http://localhost:3000/api/listings?listing_id=ACT209777414" | jq '.listing.calculated_metrics'
+curl "http://localhost:3000/api/listings?address=508-echo-pass&city=liberty-hill" | jq '.listing.features'
 ```
 
 ### Test with TypeScript
@@ -607,21 +629,32 @@ interface ListingDetailResponse {
   };
 }
 
-const response = await fetch('http://localhost:3000/api/listings/ACT209777414');
-const data: ListingDetailResponse = await response.json();
+// Fetch by listing ID
+const response1 = await fetch('http://localhost:3000/api/listings?listing_id=ACT209777414');
+const data1: ListingDetailResponse = await response1.json();
 
-console.log(data.listing.pricing.current_price);
-console.log(data.listing.calculated_metrics.price_per_sqft);
+// Fetch by address + city
+const params = new URLSearchParams({
+  address: '508-echo-pass',
+  city: 'liberty-hill'
+});
+const response2 = await fetch(`http://localhost:3000/api/listings?${params}`);
+const data2: ListingDetailResponse = await response2.json();
+
+console.log(data1.listing.pricing.current_price);
+console.log(data2.listing.calculated_metrics.price_per_sqft);
 ```
 
 ---
 
-## Backward Compatibility
+## Migration from v1
 
-The old v1 endpoint remains available at `/listings/{listing_key}` for backward compatibility. Both endpoints can run simultaneously:
+The old v1 endpoint at `/listings/{listing_key}` has been **replaced** by the new v2 endpoint at `/api/listings/{listing_key}`.
 
-- **v1 (Legacy)**: `GET /listings/{listing_key}` - Raw structure
-- **v2 (New)**: `GET /api/listings/{listing_key}` - Clean structure
+- **v1 (Removed)**: `GET /listings/{listing_key}` - No longer available
+- **v2 (Current)**: `GET /api/listings/{listing_key}` - Clean hierarchical structure
+
+**Note**: The legacy search endpoint `/listings/search` is still available for backward compatibility.
 
 ---
 

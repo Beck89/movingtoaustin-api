@@ -536,57 +536,103 @@ function transformToCleanStructure(
 
 /**
  * @swagger
- * /api/listings/{listing_key}:
+ * /api/listings:
  *   get:
  *     summary: Get property details (v2 - Clean Structure)
- *     description: Retrieve complete property details in a clean, organized JSON structure with calculated metrics
+ *     description: Retrieve complete property details in a clean, organized JSON structure with calculated metrics. Supports lookup by listing_id or by address+city combination.
  *     tags: [Listings]
  *     parameters:
- *       - in: path
- *         name: listing_key
- *         required: true
+ *       - in: query
+ *         name: listing_id
  *         schema:
  *           type: string
- *         description: Unique listing key (e.g., ACT123456)
+ *         description: Listing key (e.g., ACT123456). Use this OR address+city, not both.
  *         example: "ACT209777414"
+ *       - in: query
+ *         name: address
+ *         schema:
+ *           type: string
+ *         description: Property address with spaces replaced by hyphens (e.g., 508-echo-pass). Must be used with city parameter.
+ *         example: "508-echo-pass"
+ *       - in: query
+ *         name: city
+ *         schema:
+ *           type: string
+ *         description: City name with spaces replaced by hyphens (e.g., liberty-hill). Must be used with address parameter.
+ *         example: "liberty-hill"
  *     responses:
  *       200:
  *         description: Property details retrieved successfully
  *         content:
  *           application/json:
  *             schema:
- *               type: object
- *               properties:
- *                 listing:
- *                   type: object
- *                   description: Complete listing details in clean structure
+ *               $ref: '#/components/schemas/ListingDetailV2'
+ *       400:
+ *         description: Invalid parameters - must provide either listing_id or both address and city
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  *       404:
  *         description: Listing not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  *       500:
  *         description: Failed to fetch listing details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  */
-router.get('/:listing_key', async (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
     try {
-        const { listing_key } = req.params;
+        const { listing_id, address, city } = req.query;
 
-        // Get property details
-        const propertyResult = await pool.query(
-            `SELECT * FROM mls.properties WHERE listing_key = $1 AND mlg_can_view = true`,
-            [listing_key]
-        );
+        let propertyResult;
+
+        // Validate parameters
+        if (listing_id) {
+            // Lookup by listing_id
+            propertyResult = await pool.query(
+                `SELECT * FROM mls.properties WHERE listing_key = $1 AND mlg_can_view = true`,
+                [listing_id]
+            );
+        } else if (address && city) {
+            // Lookup by address + city
+            // Convert hyphens back to spaces
+            const addressSearch = String(address).replace(/-/g, ' ');
+            const citySearch = String(city).replace(/-/g, ' ');
+
+            // Search by address and city (case-insensitive)
+            propertyResult = await pool.query(
+                `SELECT * FROM mls.properties
+                 WHERE mlg_can_view = true
+                 AND LOWER(TRIM(address_full)) = LOWER(TRIM($1))
+                 AND LOWER(TRIM(city)) = LOWER(TRIM($2))
+                 LIMIT 1`,
+                [addressSearch, citySearch]
+            );
+        } else {
+            return res.status(400).json({
+                error: 'Invalid parameters. Must provide either listing_id or both address and city.'
+            });
+        }
 
         if (propertyResult.rows.length === 0) {
             return res.status(404).json({ error: 'Listing not found' });
         }
 
         const property = propertyResult.rows[0];
+        const listing_key = property.listing_key;
 
         // Get media (prefer local_url)
         const mediaResult = await pool.query(
-            `SELECT media_key, media_category, order_sequence, local_url, media_url, 
+            `SELECT media_key, media_category, order_sequence, local_url, media_url,
               caption, width, height
-       FROM mls.media 
-       WHERE listing_key = $1 
+       FROM mls.media
+       WHERE listing_key = $1
        ORDER BY order_sequence ASC`,
             [listing_key]
         );
@@ -594,7 +640,7 @@ router.get('/:listing_key', async (req: Request, res: Response) => {
         // Get rooms
         const roomsResult = await pool.query(
             `SELECT room_type, room_level, room_length, room_width
-       FROM mls.rooms 
+       FROM mls.rooms
        WHERE listing_key = $1`,
             [listing_key]
         );
@@ -602,8 +648,8 @@ router.get('/:listing_key', async (req: Request, res: Response) => {
         // Get open houses (future only)
         const openHousesResult = await pool.query(
             `SELECT start_time, end_time, remarks
-       FROM mls.open_houses 
-       WHERE listing_key = $1 
+       FROM mls.open_houses
+       WHERE listing_key = $1
        AND end_time > NOW()
        ORDER BY start_time ASC`,
             [listing_key]

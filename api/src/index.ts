@@ -7,7 +7,6 @@ import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './swagger.js';
 import searchRouter from './routes/search.js';
 import listingsSearchRouter from './routes/listings-search.js';
-import detailRouter from './routes/detail.js';
 import detailV2Router from './routes/listing-detail-v2.js';
 import suggestRouter from './routes/suggest.js';
 import statusRouter from './routes/status.js';
@@ -52,10 +51,9 @@ app.get('/health', (_req, res) => {
 });
 
 // Routes
-app.use('/api/listings/search', listingsSearchRouter); // New comprehensive search endpoint
-app.use('/api/listings', detailV2Router); // New v2 detail endpoint with clean structure
+app.use('/api/listings/search', listingsSearchRouter); // Comprehensive search endpoint
+app.use('/api/listings', detailV2Router); // Detail endpoint with clean structure
 app.use('/listings/search', searchRouter); // Legacy search endpoint (keep for backward compatibility)
-app.use('/listings', detailRouter); // Legacy detail endpoint (keep for backward compatibility)
 app.use('/suggest', suggestRouter);
 app.use('/status', statusRouter);
 

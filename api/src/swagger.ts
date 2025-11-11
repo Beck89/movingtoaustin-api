@@ -76,43 +76,168 @@ const options: swaggerJsdoc.Options = {
                         },
                     },
                 },
-                PropertyDetail: {
+                ListingDetailV2: {
                     type: 'object',
                     properties: {
-                        property: { $ref: '#/components/schemas/Property' },
-                        media: {
-                            type: 'array',
-                            items: {
-                                type: 'object',
-                                properties: {
-                                    media_key: { type: 'string' },
-                                    media_url: { type: 'string' },
-                                    local_url: { type: 'string' },
-                                    order_sequence: { type: 'integer' },
-                                    caption: { type: 'string' },
+                        listing: {
+                            type: 'object',
+                            properties: {
+                                ids: {
+                                    type: 'object',
+                                    properties: {
+                                        listing_key: { type: 'string', example: 'ACT209777414' },
+                                        listing_id: { type: 'string', example: 'ACT9743847' },
+                                        mls: { type: 'string', example: 'actris' },
+                                    },
                                 },
-                            },
-                        },
-                        rooms: {
-                            type: 'array',
-                            items: {
-                                type: 'object',
-                                properties: {
-                                    room_type: { type: 'string' },
-                                    room_level: { type: 'string' },
-                                    room_length: { type: 'number' },
-                                    room_width: { type: 'number' },
+                                status: {
+                                    type: 'object',
+                                    properties: {
+                                        standard_status: { type: 'string', example: 'Active' },
+                                        listing_date: { type: 'string', format: 'date', example: '2025-10-27' },
+                                        days_on_market: { type: 'integer', example: 14 },
+                                        last_modified: { type: 'string', format: 'date-time' },
+                                    },
                                 },
-                            },
-                        },
-                        open_houses: {
-                            type: 'array',
-                            items: {
-                                type: 'object',
-                                properties: {
-                                    start_time: { type: 'string', format: 'date-time' },
-                                    end_time: { type: 'string', format: 'date-time' },
-                                    remarks: { type: 'string' },
+                                pricing: {
+                                    type: 'object',
+                                    properties: {
+                                        current_price: { type: 'number', example: 530000 },
+                                        original_price: { type: 'number', example: 559990 },
+                                        price_reduction: { type: 'number', example: 29990 },
+                                        price_reduction_percentage: { type: 'number', example: 5.36 },
+                                        price_per_sqft: { type: 'number', example: 205.83 },
+                                        last_price_change: { type: 'string', format: 'date-time' },
+                                    },
+                                },
+                                property_details: {
+                                    type: 'object',
+                                    properties: {
+                                        type: { type: 'string', example: 'Single Family Residence' },
+                                        category: { type: 'string', example: 'Residential' },
+                                        condition: { type: 'string', example: 'New Construction' },
+                                        year_built: { type: 'integer', example: 2025 },
+                                        builder: { type: 'string', example: 'CastleRock Communities' },
+                                    },
+                                },
+                                location: {
+                                    type: 'object',
+                                    properties: {
+                                        address: { type: 'string', example: '508 Echo Pass' },
+                                        city: { type: 'string', example: 'Liberty Hill' },
+                                        state: { type: 'string', example: 'TX' },
+                                        zip: { type: 'string', example: '78642' },
+                                        county: { type: 'string', example: 'Williamson' },
+                                        subdivision: { type: 'string', example: 'Santa Rita Ranch' },
+                                        direction_faces: { type: 'string', example: 'East' },
+                                        coordinates: {
+                                            type: 'object',
+                                            properties: {
+                                                latitude: { type: 'number', example: 30.65768844 },
+                                                longitude: { type: 'number', example: -97.82743594 },
+                                            },
+                                        },
+                                    },
+                                },
+                                size: {
+                                    type: 'object',
+                                    properties: {
+                                        living_area_sqft: { type: 'integer', example: 2575 },
+                                        lot_size_acres: { type: 'number', example: 0.1544 },
+                                        lot_size_sqft: { type: 'integer', example: 6726 },
+                                        stories: { type: 'string', example: 'Two' },
+                                    },
+                                },
+                                rooms: {
+                                    type: 'object',
+                                    properties: {
+                                        bedrooms: { type: 'integer', example: 4 },
+                                        bedrooms_main_floor: { type: 'integer', example: 2 },
+                                        bedrooms_upper_floor: { type: 'string', example: '2' },
+                                        bathrooms_full: { type: 'integer', example: 3 },
+                                        bathrooms_half: { type: 'integer', example: 0 },
+                                        bathrooms_total: { type: 'integer', example: 3 },
+                                        garage_spaces: { type: 'number', example: 2 },
+                                        parking_total: { type: 'number', example: 2 },
+                                    },
+                                },
+                                room_list: {
+                                    type: 'array',
+                                    items: {
+                                        type: 'object',
+                                        properties: {
+                                            type: { type: 'string', example: 'Bedroom' },
+                                            level: { type: 'string', example: 'Main' },
+                                        },
+                                    },
+                                },
+                                features: {
+                                    type: 'object',
+                                    properties: {
+                                        interior: { type: 'array', items: { type: 'string' } },
+                                        exterior: { type: 'array', items: { type: 'string' } },
+                                        construction: { type: 'array', items: { type: 'string' } },
+                                        pool: { type: 'string', example: 'None' },
+                                        fireplace: { type: 'boolean', example: false },
+                                        waterfront: { type: 'boolean', example: false },
+                                    },
+                                },
+                                financial: {
+                                    type: 'object',
+                                    properties: {
+                                        hoa: {
+                                            type: 'object',
+                                            properties: {
+                                                required: { type: 'boolean', example: true },
+                                                name: { type: 'string', example: 'Santa Rita Ranch HOA' },
+                                                fee_monthly: { type: 'number', example: 106 },
+                                                fee_annual: { type: 'number', example: 1272 },
+                                            },
+                                        },
+                                        taxes: {
+                                            type: 'object',
+                                            properties: {
+                                                year: { type: 'integer', example: 2024 },
+                                                annual_amount: { type: 'number', example: 2169.07 },
+                                                monthly_estimate: { type: 'number', example: 180.76 },
+                                            },
+                                        },
+                                    },
+                                },
+                                media: {
+                                    type: 'object',
+                                    properties: {
+                                        photo_count: { type: 'integer', example: 30 },
+                                        photos: {
+                                            type: 'array',
+                                            items: {
+                                                type: 'object',
+                                                properties: {
+                                                    order: { type: 'integer', example: 0 },
+                                                    url: { type: 'string' },
+                                                    width: { type: 'integer', example: 2048 },
+                                                    height: { type: 'integer', example: 1151 },
+                                                },
+                                            },
+                                        },
+                                        virtual_tour: { type: 'string' },
+                                        video_tour: { type: 'string' },
+                                    },
+                                },
+                                calculated_metrics: {
+                                    type: 'object',
+                                    properties: {
+                                        price_per_sqft: { type: 'number', example: 205.83 },
+                                        price_per_acre: { type: 'number', example: 3432624.19 },
+                                        estimated_monthly_costs: {
+                                            type: 'object',
+                                            properties: {
+                                                hoa: { type: 'number', example: 106 },
+                                                taxes: { type: 'number', example: 180.76 },
+                                                total: { type: 'number', example: 286.76 },
+                                            },
+                                        },
+                                    },
                                 },
                             },
                         },
