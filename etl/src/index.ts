@@ -30,12 +30,12 @@ const MAX_OFFICES = process.env.ETL_MAX_OFFICES && process.env.ETL_MAX_OFFICES.t
 const MAX_OPENHOUSES = process.env.ETL_MAX_OPENHOUSES && process.env.ETL_MAX_OPENHOUSES.trim() !== '' && process.env.ETL_MAX_OPENHOUSES !== 'no_limit' ? parseInt(process.env.ETL_MAX_OPENHOUSES, 10) : null;
 
 // Queue for media downloads
-// Settings to respect MLS Grid's 2 RPS limit
-// Use concurrency:1 because rate limiter handles the 500ms delay
+// Sequential downloads with minimal delay
+// Each download takes ~900ms, so with 50ms delay = ~1 RPS
 const mediaQueue = new PQueue({
-    concurrency: 1,  // Process one at a time (rate limiter adds 500ms delay)
+    concurrency: 1,  // One at a time
     interval: 1000,  // 1 second interval
-    intervalCap: 2,  // Max 2 requests per second
+    intervalCap: 20,  // Allow bursts (rate limiter controls actual rate)
 });
 
 interface Property {
