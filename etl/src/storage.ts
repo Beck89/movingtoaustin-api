@@ -129,6 +129,19 @@ export async function downloadAndUploadMedia(
                 throw new Error(`Media not found (404) - file may have been deleted`);
             } else if (response.statusCode === 403) {
                 throw new Error(`Access denied (403) - authentication issue`);
+            } else if (response.statusCode === 429) {
+                // Rate limit - log headers and body for debugging
+                const headers = JSON.stringify(response.headers);
+                let body = '';
+                try {
+                    const bodyBuffer = await response.body.arrayBuffer();
+                    body = Buffer.from(bodyBuffer).toString('utf-8').substring(0, 500);
+                } catch (e) {
+                    body = 'Could not read body';
+                }
+                console.error(`[429 Rate Limit] Headers: ${headers}`);
+                console.error(`[429 Rate Limit] Body: ${body}`);
+                throw new Error(`Failed to download media: 429`);
             }
             throw new Error(`Failed to download media: ${response.statusCode}`);
         }
