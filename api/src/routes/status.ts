@@ -117,16 +117,18 @@ router.get('/', async (_req: Request, res: Response) => {
             FROM mls.media
         `);
 
-        // Get sync state
+        // Get sync state - prioritize Property resource for high water mark
         const syncState = await pool.query(`
-            SELECT 
+            SELECT
                 resource,
                 originating_system_name,
                 last_modification_ts,
                 last_run_at,
                 EXTRACT(EPOCH FROM (NOW() - last_run_at))::integer as seconds_since_last_sync
             FROM mls.sync_state
-            ORDER BY last_run_at DESC
+            ORDER BY
+                CASE WHEN resource = 'Property' THEN 0 ELSE 1 END,
+                last_run_at DESC
         `);
 
         // Get Meilisearch stats

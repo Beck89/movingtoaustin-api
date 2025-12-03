@@ -1303,7 +1303,7 @@ async function retryFailedMediaDownloads(): Promise<void> {
         const recoveryBatchSize = Math.min(MEDIA_RECOVERY_BATCH_SIZE * 5, 50); // Up to 50 properties
         
         const result = await pool.query(`
-            SELECT DISTINCT p.listing_key,
+            SELECT p.listing_key, p.modification_timestamp,
                    (SELECT COUNT(*) FROM mls.media m WHERE m.listing_key = p.listing_key AND m.local_url IS NULL) as missing_count
             FROM mls.properties p
             WHERE p.photo_count > 0
