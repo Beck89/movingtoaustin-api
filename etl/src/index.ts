@@ -38,6 +38,16 @@ const mediaQueue = new PQueue({
     intervalCap: 20,  // Allow bursts (rate limiter controls actual rate)
 });
 
+// Track failed media to avoid infinite retries during a single sync cycle
+// Key: mediaKey, Value: { attempts: number, lastAttempt: Date, permanentlyFailed: boolean }
+const failedMediaTracker = new Map<string, { attempts: number; lastAttempt: Date; permanentlyFailed: boolean }>();
+const MAX_MEDIA_ATTEMPTS_PER_CYCLE = 3;  // Max attempts per sync cycle before skipping
+const MEDIA_RETRY_COOLDOWN_MS = 5 * 60 * 1000;  // 5 minutes cooldown (shorter - we want to retry soon)
+
+// Track if we're currently rate limited (global flag)
+let isRateLimited = false;
+let rateLimitResetTime: Date | null = null;
+
 interface Property {
     ListingKey: string;
     ListingId?: string;
@@ -406,14 +416,51 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
         // 2. It's not a video
         // 3. Photos have changed OR we don't have it downloaded yet
         if (item.MediaURL && !isVideo && s3Configured && (photosChanged || !alreadyDownloaded)) {
-            // Queue media download with patient retry for rate limits
-            // MLS Grid rate limits last 1 hour, so we need to be very patient
+            // Check if this media has permanently failed (404, 403)
+            const failedInfo = failedMediaTracker.get(item.MediaKey);
+            if (failedInfo?.permanentlyFailed) {
+                // Skip permanently failed media - these will never succeed
+                continue;
+            }
+            
+            // Check if we're globally rate limited - skip all media downloads
+            if (isRateLimited && rateLimitResetTime && rateLimitResetTime > new Date()) {
+                // Don't queue more downloads while rate limited
+                continue;
+            }
+            
+            // Check if this specific media is in cooldown (failed too many times this cycle)
+            if (failedInfo && failedInfo.attempts >= MAX_MEDIA_ATTEMPTS_PER_CYCLE) {
+                const timeSinceLastAttempt = Date.now() - failedInfo.lastAttempt.getTime();
+                if (timeSinceLastAttempt < MEDIA_RETRY_COOLDOWN_MS) {
+                    // Still in cooldown, skip this media for now - will retry next cycle
+                    continue;
+                }
+                // Cooldown expired, reset attempts for another try
+                failedInfo.attempts = 0;
+            }
+            
+            // Queue media download with limited retries
             mediaQueue.add(() =>
                 pRetry(
                     async () => {
+                        // Check rate limit before attempting
+                        if (isRateLimited && rateLimitResetTime && rateLimitResetTime > new Date()) {
+                            throw new Error('Rate limited - skipping');
+                        }
+                        
                         try {
                             return await downloadAndUploadMedia(item.MediaURL!, listingKey, item.Order || 0, item.MediaCategory || 'Photo');
                         } catch (error: any) {
+                            // Handle rate limiting globally
+                            if (error.message?.includes('429')) {
+                                isRateLimited = true;
+                                // MLS Grid rate limits typically last 1 hour, but we'll check more frequently
+                                rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+                                console.log(`[Media] Rate limited! Will pause media downloads until ${rateLimitResetTime.toISOString()}`);
+                                throw error;
+                            }
+                            
                             // If URL expired or got 400 error, fetch fresh URL from MLS API
                             if (error.message?.includes('expired') || error.message?.includes('400')) {
                                 console.log(`[Media] URL expired for ${item.MediaKey}, fetching fresh URL...`);
@@ -433,7 +480,13 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
                                             return await downloadAndUploadMedia(freshMedia.MediaURL, listingKey, item.Order || 0, item.MediaCategory || 'Photo');
                                         }
                                     }
-                                } catch (refreshError) {
+                                } catch (refreshError: any) {
+                                    // If refresh also fails with rate limit, set global flag
+                                    if (refreshError.message?.includes('429')) {
+                                        isRateLimited = true;
+                                        rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000);
+                                        throw new Error('Rate limited while refreshing URL');
+                                    }
                                     console.error(`[Media] Failed to refresh URL for ${item.MediaKey}:`, refreshError);
                                 }
                             }
@@ -441,31 +494,38 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
                         }
                     },
                     {
-                        retries: 20,  // Many retries to handle 1-hour rate limit blocks
-                        minTimeout: 60000,  // Start with 1 minute wait
-                        maxTimeout: 600000,  // Max 10 minutes between retries
-                        factor: 1.5,  // Slower exponential backoff
+                        retries: 2,  // Limited retries per attempt
+                        minTimeout: 2000,  // 2 seconds
+                        maxTimeout: 10000,  // 10 seconds max
+                        factor: 2,
                         onFailedAttempt: (error) => {
-                            // Special handling for 429 (rate limit) errors
                             if (error.message?.includes('429')) {
-                                const waitTime = Math.min(error.attemptNumber * 60000 * Math.pow(1.5, error.attemptNumber - 1), 600000);
-                                console.log(`[Media] Rate limit (429) for ${item.MediaKey}, retry ${error.attemptNumber}/20 (waiting ${Math.round(waitTime / 60000)} minutes)`);
-                            } else if (error.retriesLeft === 0) {
-                                // Only log non-429 final failures
-                                console.log(`[Media] Final retry failed for ${item.MediaKey}: ${error.message}`);
+                                // Don't retry on rate limit - let the cooldown handle it
                             }
                         }
                     }
                 ).then(async (localUrl) => {
+                    // Success - clear from failed tracker and reset rate limit flag
+                    failedMediaTracker.delete(item.MediaKey);
+                    isRateLimited = false;
                     await pool.query(
                         `UPDATE mls.media SET local_url = $1 WHERE media_key = $2`,
                         [localUrl, item.MediaKey]
                     );
                 }).catch((err) => {
-                    // Log all final failures (after all retries exhausted)
-                    if (!err.message?.includes('400') && !err.message?.includes('expired')) {
-                        console.error(`[Media] Failed after all retries ${item.MediaKey}: ${err.message}`);
+                    // Track failed media
+                    const existing = failedMediaTracker.get(item.MediaKey) || { attempts: 0, lastAttempt: new Date(), permanentlyFailed: false };
+                    existing.attempts++;
+                    existing.lastAttempt = new Date();
+                    
+                    // Mark as permanently failed if it's a 404 or other non-recoverable error
+                    if (err.message?.includes('404') || err.message?.includes('403')) {
+                        existing.permanentlyFailed = true;
+                        console.log(`[Media] Permanently failed ${item.MediaKey}: ${err.message}`);
                     }
+                    // Don't log rate limit errors - they're expected and handled globally
+                    
+                    failedMediaTracker.set(item.MediaKey, existing);
                 })
             );
         }
@@ -797,11 +857,22 @@ async function syncProperties(): Promise<void> {
             }
         }
 
-        // Download media for this batch immediately (before URLs expire)
-        // Wait for all queued media downloads to complete before moving to next batch
-        console.log(`⏳ Waiting for ${mediaQueue.size + mediaQueue.pending} media downloads to complete...`);
-        await mediaQueue.onIdle();
-        console.log(`✅ Batch media downloads complete`);
+        // Don't wait for media downloads - let them complete in background
+        // This prevents the sync from getting stuck on rate-limited media
+        const pendingMedia = mediaQueue.size + mediaQueue.pending;
+        if (pendingMedia > 0) {
+            console.log(`📸 ${pendingMedia} media downloads queued (processing in background)`);
+        }
+        
+        // Only wait if queue is getting too large (backpressure)
+        if (pendingMedia > 500) {
+            console.log(`⏳ Queue backpressure: waiting for some downloads to complete...`);
+            // Wait for queue to drain to 100 items
+            while (mediaQueue.size + mediaQueue.pending > 100) {
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+            console.log(`✅ Queue drained, continuing sync`);
+        }
 
         nextLink = data['@odata.nextLink'] || null;
 
@@ -1175,42 +1246,131 @@ async function retryFailedMediaDownloads(): Promise<void> {
         return;
     }
 
+    // Check if we're still rate limited
+    if (isRateLimited && rateLimitResetTime && rateLimitResetTime > new Date()) {
+        const minutesLeft = Math.ceil((rateLimitResetTime.getTime() - Date.now()) / 60000);
+        console.log(`⏸️  Media recovery paused - rate limited for ${minutesLeft} more minutes`);
+        return;
+    }
+    
+    // Reset rate limit flag if cooldown expired
+    if (isRateLimited && rateLimitResetTime && rateLimitResetTime <= new Date()) {
+        console.log(`✅ Rate limit cooldown expired, resuming media downloads`);
+        isRateLimited = false;
+        rateLimitResetTime = null;
+    }
+
+    // Log failed media tracker stats and clear expired cooldowns
+    const permanentlyFailed = Array.from(failedMediaTracker.values()).filter(f => f.permanentlyFailed).length;
+    let inCooldown = 0;
+    
+    // Clear cooldowns that have expired (so media gets retried)
+    for (const [, value] of failedMediaTracker.entries()) {
+        if (!value.permanentlyFailed && value.attempts >= MAX_MEDIA_ATTEMPTS_PER_CYCLE) {
+            const timeSinceLastAttempt = Date.now() - value.lastAttempt.getTime();
+            if (timeSinceLastAttempt >= MEDIA_RETRY_COOLDOWN_MS) {
+                value.attempts = 0; // Reset for retry
+            } else {
+                inCooldown++;
+            }
+        }
+    }
+    
+    if (permanentlyFailed > 0 || inCooldown > 0) {
+        console.log(`📊 Failed media tracker: ${permanentlyFailed} permanently failed, ${inCooldown} in cooldown`);
+    }
+
     try {
-        // Instead of using stale URLs from database, find properties that need media
-        // and re-fetch fresh URLs from MLS API
+        // Get count of total missing media
+        const countResult = await pool.query(`
+            SELECT COUNT(*) as total_missing
+            FROM mls.media m
+            WHERE m.local_url IS NULL
+              AND (m.media_category IS NULL OR m.media_category != 'Video')
+              AND m.media_url IS NOT NULL
+        `);
+        const totalMissing = parseInt(countResult.rows[0]?.total_missing || '0', 10);
+        
+        if (totalMissing === 0) {
+            console.log('✅ All media has been downloaded');
+            return;
+        }
+        
+        console.log(`📊 Total missing media: ${totalMissing}`);
+
+        // Find properties with missing media - process more aggressively
+        // Use a larger batch size to catch up faster
+        const recoveryBatchSize = Math.min(MEDIA_RECOVERY_BATCH_SIZE * 5, 50); // Up to 50 properties
+        
         const result = await pool.query(`
-            SELECT DISTINCT p.listing_key
+            SELECT DISTINCT p.listing_key,
+                   (SELECT COUNT(*) FROM mls.media m WHERE m.listing_key = p.listing_key AND m.local_url IS NULL) as missing_count
             FROM mls.properties p
             WHERE p.photo_count > 0
-              AND (
-                SELECT COUNT(*)
-                FROM mls.media m
+              AND EXISTS (
+                SELECT 1 FROM mls.media m
                 WHERE m.listing_key = p.listing_key
-                  AND m.local_url IS NOT NULL
-              ) < p.photo_count
+                  AND m.local_url IS NULL
+                  AND (m.media_category IS NULL OR m.media_category != 'Video')
+              )
             ORDER BY p.modification_timestamp DESC
             LIMIT $1
-        `, [MEDIA_RECOVERY_BATCH_SIZE]);
+        `, [recoveryBatchSize]);
 
         if (result.rows.length === 0) {
             console.log('✅ All properties have their media downloaded');
             return;
         }
 
-        console.log(`📊 Found ${result.rows.length} properties with missing media`);
+        const totalMissingInBatch = result.rows.reduce((sum: number, r: any) => sum + parseInt(r.missing_count, 10), 0);
+        console.log(`📊 Found ${result.rows.length} properties with ${totalMissingInBatch} missing media items`);
         console.log(`🔄 Re-fetching fresh media URLs from MLS API...`);
+
+        let skippedCount = 0;
+        let queuedCount = 0;
 
         // Re-fetch each property with fresh Media URLs
         for (const row of result.rows) {
+            // Check rate limit before each property
+            if (isRateLimited) {
+                console.log(`⏸️  Rate limited - stopping media recovery for this cycle`);
+                break;
+            }
+            
             try {
                 const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey`;
                 const data = await fetchMLSData(endpoint, {});
 
                 if (data && data.Media && data.Media.length > 0) {
-                    console.log(`  Refreshing ${data.Media.length} media URLs for ${row.listing_key}`);
-
                     // Update media URLs in database and queue downloads
                     for (const item of data.Media) {
+                        // Check if already downloaded
+                        const existingMedia = await pool.query(
+                            `SELECT local_url FROM mls.media WHERE media_key = $1 AND local_url IS NOT NULL`,
+                            [item.MediaKey]
+                        );
+                        if (existingMedia.rows.length > 0) {
+                            continue; // Already downloaded
+                        }
+                        
+                        // Check if this media has permanently failed
+                        const failedInfo = failedMediaTracker.get(item.MediaKey);
+                        if (failedInfo?.permanentlyFailed) {
+                            skippedCount++;
+                            continue;
+                        }
+                        
+                        // Check cooldown
+                        if (failedInfo && failedInfo.attempts >= MAX_MEDIA_ATTEMPTS_PER_CYCLE) {
+                            const timeSinceLastAttempt = Date.now() - failedInfo.lastAttempt.getTime();
+                            if (timeSinceLastAttempt < MEDIA_RETRY_COOLDOWN_MS) {
+                                skippedCount++;
+                                continue;
+                            }
+                            // Cooldown expired, reset attempts
+                            failedInfo.attempts = 0;
+                        }
+
                         // Update the media_url with fresh token
                         await pool.query(
                             `UPDATE mls.media
@@ -1224,30 +1384,50 @@ async function retryFailedMediaDownloads(): Promise<void> {
                             (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));
 
                         if (item.MediaURL && !isVideo) {
+                            queuedCount++;
                             mediaQueue.add(() =>
                                 pRetry(
-                                    () => downloadAndUploadMedia(
-                                        item.MediaURL,
-                                        row.listing_key,
-                                        item.Order || 0,
-                                        item.MediaCategory || 'Photo'
-                                    ),
+                                    async () => {
+                                        if (isRateLimited) {
+                                            throw new Error('Rate limited - skipping');
+                                        }
+                                        return downloadAndUploadMedia(
+                                            item.MediaURL,
+                                            row.listing_key,
+                                            item.Order || 0,
+                                            item.MediaCategory || 'Photo'
+                                        );
+                                    },
                                     {
                                         retries: 2,
-                                        minTimeout: 5000,
-                                        maxTimeout: 15000,
+                                        minTimeout: 2000,
+                                        maxTimeout: 10000,
                                         factor: 2,
                                     }
                                 ).then(async (localUrl) => {
+                                    // Success - clear from failed tracker
+                                    failedMediaTracker.delete(item.MediaKey);
+                                    isRateLimited = false; // Success means we're not rate limited
                                     await pool.query(
                                         'UPDATE mls.media SET local_url = $1 WHERE media_key = $2',
                                         [localUrl, item.MediaKey]
                                     );
                                 }).catch((err) => {
-                                    // Log non-400 errors (400 = still expired, which shouldn't happen with fresh URLs)
-                                    if (!err.message?.includes('400')) {
-                                        console.error(`[Media] Failed ${item.MediaKey}: ${err.message}`);
+                                    // Track failed media
+                                    const existing = failedMediaTracker.get(item.MediaKey) || { attempts: 0, lastAttempt: new Date(), permanentlyFailed: false };
+                                    existing.attempts++;
+                                    existing.lastAttempt = new Date();
+                                    
+                                    if (err.message?.includes('404') || err.message?.includes('403')) {
+                                        existing.permanentlyFailed = true;
                                     }
+                                    
+                                    if (err.message?.includes('429')) {
+                                        isRateLimited = true;
+                                        rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000);
+                                    }
+                                    
+                                    failedMediaTracker.set(item.MediaKey, existing);
                                 })
                             );
                         }
@@ -1256,20 +1436,57 @@ async function retryFailedMediaDownloads(): Promise<void> {
 
                 // Rate limit: wait between property fetches
                 await new Promise(resolve => setTimeout(resolve, 500));
-            } catch (error) {
+            } catch (error: any) {
+                // If we hit rate limit during recovery, stop and try again next cycle
+                if (error.message?.includes('429')) {
+                    isRateLimited = true;
+                    rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000);
+                    console.log(`⚠️  Rate limited during media recovery, will continue in 10 minutes`);
+                    break;
+                }
                 console.error(`Failed to refresh media for ${row.listing_key}:`, error);
             }
         }
 
-        console.log(`📈 Media recovery queued for ${result.rows.length} properties`);
+        console.log(`📈 Media recovery: ${queuedCount} queued, ${skippedCount} skipped (failed/cooldown)`);
+        
+        // Log overall progress
+        const remainingResult = await pool.query(`
+            SELECT COUNT(*) as remaining
+            FROM mls.media m
+            WHERE m.local_url IS NULL
+              AND (m.media_category IS NULL OR m.media_category != 'Video')
+              AND m.media_url IS NOT NULL
+        `);
+        const remaining = parseInt(remainingResult.rows[0]?.remaining || '0', 10);
+        const percentage = totalMissing > 0 ? Math.round((1 - remaining / totalMissing) * 100) : 100;
+        console.log(`📊 Media download progress: ~${percentage}% complete (${remaining} remaining)`);
+        
     } catch (error) {
         console.error('Media recovery error:', error);
     }
 }
 
 async function runETL(): Promise<void> {
+    const startTime = Date.now();
+    
     try {
-        // Sync active properties first
+        // Log sync start with queue status
+        const pendingMedia = mediaQueue.size + mediaQueue.pending;
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`[${new Date().toISOString()}] Starting ETL sync cycle`);
+        if (pendingMedia > 0) {
+            console.log(`📸 ${pendingMedia} media downloads still in queue from previous cycle`);
+        }
+        if (isRateLimited && rateLimitResetTime) {
+            const minutesLeft = Math.ceil((rateLimitResetTime.getTime() - Date.now()) / 60000);
+            if (minutesLeft > 0) {
+                console.log(`⚠️  Rate limited - media downloads paused for ${minutesLeft} more minutes`);
+            }
+        }
+        console.log(`${'='.repeat(60)}\n`);
+        
+        // Sync active properties first (this is the critical path - must complete)
         await syncProperties();
 
         // Then check for deletions (MlgCanView=false)
@@ -1282,6 +1499,13 @@ async function runETL(): Promise<void> {
 
         // Retry failed media downloads (runs after main sync to avoid competing for rate limits)
         await retryFailedMediaDownloads();
+        
+        const duration = Math.round((Date.now() - startTime) / 1000);
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`[${new Date().toISOString()}] ETL sync cycle complete (${duration}s)`);
+        console.log(`📸 Media queue: ${mediaQueue.size + mediaQueue.pending} pending downloads`);
+        console.log(`${'='.repeat(60)}\n`);
+        
     } catch (error) {
         console.error('ETL error:', error);
     }
