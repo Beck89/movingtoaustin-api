@@ -1195,6 +1195,27 @@ async function syncOpenHouses(): Promise<void> {
                     continue;
                 }
 
+                // Handle missing start_time or end_time by using OpenHouseDate as fallback
+                // OpenHouseDate is just a date (e.g., "2025-07-26"), so we create timestamps from it
+                let startTime = openHouse.OpenHouseStartTime;
+                let endTime = openHouse.OpenHouseEndTime;
+                
+                if (!startTime && openHouse.OpenHouseDate) {
+                    // Use OpenHouseDate with a default start time of 00:00:00
+                    startTime = `${openHouse.OpenHouseDate}T00:00:00.000Z`;
+                }
+                
+                if (!endTime && openHouse.OpenHouseDate) {
+                    // Use OpenHouseDate with a default end time of 23:59:59
+                    endTime = `${openHouse.OpenHouseDate}T23:59:59.000Z`;
+                }
+                
+                // Skip if we still don't have valid times
+                if (!startTime || !endTime) {
+                    console.log(`Skipping open house ${openHouse.OpenHouseKey} - missing start/end time and no OpenHouseDate fallback`);
+                    continue;
+                }
+
                 const query = `
                     INSERT INTO mls.open_houses (
                         listing_key, start_time, end_time, remarks, raw
@@ -1204,8 +1225,8 @@ async function syncOpenHouses(): Promise<void> {
 
                 await pool.query(query, [
                     openHouse.ListingKey,
-                    openHouse.OpenHouseStartTime,
-                    openHouse.OpenHouseEndTime,
+                    startTime,
+                    endTime,
                     openHouse.OpenHouseRemarks,
                     JSON.stringify(openHouse),
                 ]);
