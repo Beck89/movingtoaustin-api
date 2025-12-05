@@ -788,7 +788,7 @@ async function syncProperties(): Promise<void> {
         console.log('   Media URLs will point to MLS Grid (configure S3 in .env to download)');
     }
 
-    const highWater = await getHighWaterMark('Property');
+    let highWater = await getHighWaterMark('Property');
     let maxTimestamp = highWater;
 
     // Build filter
@@ -864,28 +864,42 @@ async function syncProperties(): Promise<void> {
             console.log(`📸 ${pendingMedia} media downloads queued (processing in background)`);
         }
         
-        // Only wait if queue is getting too large (backpressure)
-        if (pendingMedia > 500) {
+        // Only wait if queue is getting too large (backpressure) AND we're not rate limited
+        // If rate limited, skip backpressure wait - the queue will drain when rate limit expires
+        if (pendingMedia > 500 && !isRateLimited) {
             console.log(`⏳ Queue backpressure: waiting for some downloads to complete...`);
-            // Wait for queue to drain to 100 items
-            while (mediaQueue.size + mediaQueue.pending > 100) {
+            // Wait for queue to drain to 100 items, but break out if rate limited
+            let waitIterations = 0;
+            const maxWaitIterations = 60; // Max 5 minutes (60 * 5 seconds)
+            while (mediaQueue.size + mediaQueue.pending > 100 && !isRateLimited && waitIterations < maxWaitIterations) {
                 await new Promise(resolve => setTimeout(resolve, 5000));
+                waitIterations++;
             }
-            console.log(`✅ Queue drained, continuing sync`);
+            if (isRateLimited) {
+                console.log(`⚠️  Rate limited during backpressure wait - continuing sync without waiting`);
+            } else if (waitIterations >= maxWaitIterations) {
+                console.log(`⚠️  Backpressure wait timeout - continuing sync`);
+            } else {
+                console.log(`✅ Queue drained, continuing sync`);
+            }
+        } else if (pendingMedia > 500 && isRateLimited) {
+            console.log(`⏭️  Skipping backpressure wait - rate limited, queue will drain when limit expires`);
         }
 
         nextLink = data['@odata.nextLink'] || null;
+
+        // Update high-water mark after each batch to ensure progress is saved
+        // This prevents re-processing the same properties if sync is interrupted
+        if (maxTimestamp && maxTimestamp !== highWater) {
+            await setHighWaterMark('Property', maxTimestamp);
+            console.log(`Updated high-water mark to ${maxTimestamp}`);
+            highWater = maxTimestamp; // Update local copy to avoid redundant DB writes
+        }
 
         // Rate limiting: Minimum 500ms delay to ensure max 2 RPS
         if (nextLink) {
             await new Promise(resolve => setTimeout(resolve, 500));
         }
-    }
-
-    // Update high-water mark
-    if (maxTimestamp && maxTimestamp !== highWater) {
-        await setHighWaterMark('Property', maxTimestamp);
-        console.log(`Updated high-water mark to ${maxTimestamp}`);
     }
 
     console.log(`Sync complete. Processed ${totalProcessed} properties`);
