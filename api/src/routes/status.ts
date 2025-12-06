@@ -6,6 +6,379 @@ const router = Router();
 
 /**
  * @swagger
+ * /status/dashboard:
+ *   get:
+ *     summary: Get HTML dashboard
+ *     description: Mobile-friendly HTML dashboard showing system status
+ *     tags: [System]
+ *     responses:
+ *       200:
+ *         description: HTML dashboard
+ *         content:
+ *           text/html:
+ *             schema:
+ *               type: string
+ */
+router.get('/dashboard', async (_req: Request, res: Response) => {
+    try {
+        // Get database stats
+        const dbStats = await pool.query(`
+            SELECT
+                COUNT(*) as total_properties,
+                COUNT(*) FILTER (WHERE standard_status = 'Active') as active_properties,
+                COUNT(*) FILTER (WHERE standard_status = 'Pending') as pending_properties
+            FROM mls.properties
+        `);
+
+        // Get media stats
+        const mediaStats = await pool.query(`
+            SELECT
+                COUNT(*) as total_media,
+                COUNT(*) FILTER (WHERE local_url IS NOT NULL) as downloaded_media,
+                COUNT(*) FILTER (WHERE local_url IS NULL AND (media_category IS NULL OR media_category != 'Video')) as missing_media
+            FROM mls.media
+        `);
+
+        // Get properties with missing media count
+        const missingMediaProps = await pool.query(`
+            SELECT COUNT(DISTINCT p.listing_key) as count
+            FROM mls.properties p
+            WHERE p.photo_count > 0
+              AND EXISTS (
+                SELECT 1 FROM mls.media m
+                WHERE m.listing_key = p.listing_key
+                  AND m.local_url IS NULL
+                  AND (m.media_category IS NULL OR m.media_category != 'Video')
+              )
+        `);
+
+        // Get sync state for all resources
+        const syncState = await pool.query(`
+            SELECT
+                resource,
+                last_modification_ts,
+                last_run_at,
+                EXTRACT(EPOCH FROM (NOW() - last_run_at))::integer as seconds_since_last_sync
+            FROM mls.sync_state
+            ORDER BY
+                CASE WHEN resource = 'Property' THEN 0 ELSE 1 END,
+                last_run_at DESC
+        `);
+
+        // Get progress history (last 24 hours, every 15 min = ~96 records max)
+        let progressHistory: any[] = [];
+        try {
+            const historyResult = await pool.query(`
+                SELECT
+                    recorded_at,
+                    download_percentage,
+                    missing_media,
+                    downloaded_media,
+                    media_worker_downloads,
+                    api_rate_limited,
+                    media_cdn_rate_limited
+                FROM mls.progress_history
+                WHERE recorded_at > NOW() - INTERVAL '24 hours'
+                ORDER BY recorded_at DESC
+                LIMIT 96
+            `);
+            progressHistory = historyResult.rows;
+        } catch {
+            // Table might not exist yet
+        }
+
+        const totalMedia = parseInt(mediaStats.rows[0].total_media);
+        const downloadedMedia = parseInt(mediaStats.rows[0].downloaded_media);
+        const missingMedia = parseInt(mediaStats.rows[0].missing_media);
+        const downloadPercentage = totalMedia > 0 ? Math.round((downloadedMedia / totalMedia) * 100) : 0;
+        const propertiesWithMissing = parseInt(missingMediaProps.rows[0].count);
+
+        const lastSync = syncState.rows.find(r => r.resource === 'Property');
+        const secondsSinceSync = lastSync?.seconds_since_last_sync || 0;
+        const minutesSinceSync = Math.floor(secondsSinceSync / 60);
+        const syncInterval = parseInt(process.env.ETL_INTERVAL_MINUTES || '5', 10);
+        const isHealthy = minutesSinceSync <= syncInterval * 2;
+
+        // Calculate ETA for media downloads
+        // Assuming ~1 download per second when not rate limited
+        const etaMinutes = Math.ceil(missingMedia / 60);
+        const etaHours = Math.floor(etaMinutes / 60);
+        const etaRemainingMinutes = etaMinutes % 60;
+
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="60">
+    <title>MLS Sync Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 16px;
+            min-height: 100vh;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            font-size: 1.5rem;
+            color: #4ade80;
+        }
+        .header .time {
+            font-size: 0.85rem;
+            color: #888;
+            margin-top: 4px;
+        }
+        .card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .card-title {
+            font-size: 0.9rem;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #2a2a4a;
+        }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-label { color: #aaa; }
+        .stat-value { font-weight: 600; font-size: 1.1rem; }
+        .stat-value.green { color: #4ade80; }
+        .stat-value.yellow { color: #fbbf24; }
+        .stat-value.red { color: #f87171; }
+        .stat-value.blue { color: #60a5fa; }
+        .progress-bar {
+            background: #2a2a4a;
+            border-radius: 8px;
+            height: 24px;
+            overflow: hidden;
+            margin: 12px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4ade80, #22c55e);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.85rem;
+            transition: width 0.5s ease;
+        }
+        .big-number {
+            font-size: 2.5rem;
+            font-weight: 700;
+            text-align: center;
+            margin: 8px 0;
+        }
+        .sub-text {
+            text-align: center;
+            color: #888;
+            font-size: 0.85rem;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .status-healthy { background: #166534; color: #4ade80; }
+        .status-warning { background: #854d0e; color: #fbbf24; }
+        .sync-resources {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .sync-resource {
+            background: #1a1a2e;
+            padding: 8px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .sync-resource .name {
+            font-size: 0.75rem;
+            color: #888;
+        }
+        .sync-resource .time {
+            font-size: 0.85rem;
+            color: #60a5fa;
+        }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 0.75rem;
+            margin-top: 20px;
+        }
+        .history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .history-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            background: #1a1a2e;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+        .history-time {
+            color: #888;
+            min-width: 100px;
+        }
+        .history-pct {
+            font-weight: 600;
+            min-width: 40px;
+        }
+        .history-missing {
+            color: #aaa;
+            flex: 1;
+        }
+        .history-dl {
+            font-size: 0.75rem;
+        }
+        .history-rl {
+            font-size: 0.75rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏠 MLS Sync Dashboard</h1>
+        <div class="time">Last updated: ${new Date().toLocaleString()}</div>
+        <div class="time">Auto-refreshes every 60 seconds</div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">📊 Sync Status</div>
+        <div style="text-align: center; margin-bottom: 12px;">
+            <span class="status-badge ${isHealthy ? 'status-healthy' : 'status-warning'}">
+                ${isHealthy ? '✓ Healthy' : '⚠ Warning'}
+            </span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Last Sync</span>
+            <span class="stat-value ${minutesSinceSync <= syncInterval ? 'green' : minutesSinceSync <= syncInterval * 2 ? 'yellow' : 'red'}">
+                ${minutesSinceSync} min ago
+            </span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">High Water Mark</span>
+            <span class="stat-value blue">${lastSync?.last_modification_ts ? new Date(lastSync.last_modification_ts).toLocaleTimeString() : 'N/A'}</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">📸 Media Downloads</div>
+        <div class="big-number ${downloadPercentage >= 99 ? 'green' : downloadPercentage >= 90 ? 'yellow' : 'blue'}">${downloadPercentage}%</div>
+        <div class="progress-bar">
+            <div class="progress-fill" style="width: ${downloadPercentage}%">${downloadedMedia.toLocaleString()} / ${totalMedia.toLocaleString()}</div>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Missing Media</span>
+            <span class="stat-value ${missingMedia === 0 ? 'green' : 'yellow'}">${missingMedia.toLocaleString()}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Properties Incomplete</span>
+            <span class="stat-value ${propertiesWithMissing === 0 ? 'green' : 'yellow'}">${propertiesWithMissing.toLocaleString()}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Est. Time Remaining</span>
+            <span class="stat-value blue">${etaHours > 0 ? etaHours + 'h ' : ''}${etaRemainingMinutes}m</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">🏘️ Properties</div>
+        <div class="stat-row">
+            <span class="stat-label">Total</span>
+            <span class="stat-value">${parseInt(dbStats.rows[0].total_properties).toLocaleString()}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Active</span>
+            <span class="stat-value green">${parseInt(dbStats.rows[0].active_properties).toLocaleString()}</span>
+        </div>
+        <div class="stat-row">
+            <span class="stat-label">Pending</span>
+            <span class="stat-value yellow">${parseInt(dbStats.rows[0].pending_properties).toLocaleString()}</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">🔄 Resource Sync Times</div>
+        <div class="sync-resources">
+            ${syncState.rows.map(r => `
+                <div class="sync-resource">
+                    <div class="name">${r.resource}</div>
+                    <div class="time">${Math.floor(r.seconds_since_last_sync / 60)}m ago</div>
+                </div>
+            `).join('')}
+        </div>
+    </div>
+
+    ${progressHistory.length > 0 ? `
+    <div class="card">
+        <div class="card-title">📈 Progress History (Last 24h)</div>
+        <div class="history-list">
+            ${progressHistory.slice(0, 12).map(h => {
+                const time = new Date(h.recorded_at);
+                const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                const rateLimited = h.api_rate_limited || h.media_cdn_rate_limited;
+                return `
+                <div class="history-row">
+                    <span class="history-time">${dateStr} ${timeStr}</span>
+                    <span class="history-pct ${h.download_percentage >= 99 ? 'green' : ''}">${h.download_percentage}%</span>
+                    <span class="history-missing">${parseInt(h.missing_media).toLocaleString()} missing</span>
+                    ${h.media_worker_downloads > 0 ? `<span class="history-dl green">+${h.media_worker_downloads}</span>` : ''}
+                    ${rateLimited ? '<span class="history-rl">⏸️</span>' : ''}
+                </div>
+            `}).join('')}
+        </div>
+        ${progressHistory.length > 12 ? `<div class="sub-text" style="margin-top:8px;">${progressHistory.length - 12} more records...</div>` : ''}
+    </div>
+    ` : ''}
+
+    <div class="footer">
+        <p>MLS Grid ETL System</p>
+        <p>Sync interval: ${syncInterval} minutes</p>
+    </div>
+</body>
+</html>`;
+
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+    } catch (error) {
+        console.error('Dashboard endpoint error:', error);
+        res.status(500).send(`
+            <html>
+                <body style="background:#1a1a2e;color:#f87171;padding:20px;font-family:sans-serif;">
+                    <h1>Error loading dashboard</h1>
+                    <p>${error instanceof Error ? error.message : 'Unknown error'}</p>
+                </body>
+            </html>
+        `);
+    }
+});
+
+/**
+ * @swagger
  * /status:
  *   get:
  *     summary: Get system status

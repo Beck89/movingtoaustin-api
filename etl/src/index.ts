@@ -52,6 +52,11 @@ let rateLimitResetTime: Date | null = null;
 let isMediaCdnRateLimited = false;
 let mediaCdnRateLimitResetTime: Date | null = null;
 
+// Track media worker downloads for progress history
+let mediaWorkerDownloadsThisCycle = 0;
+let lastProgressRecordTime = 0;
+const PROGRESS_RECORD_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+
 interface Property {
     ListingKey: string;
     ListingId?: string;
@@ -136,6 +141,88 @@ interface UnitType {
     RentMinimum?: number;
     RentMaximum?: number;
     [key: string]: any;
+}
+
+// Record progress history to database
+async function recordProgressHistory(): Promise<void> {
+    try {
+        // Check if enough time has passed since last record
+        const now = Date.now();
+        if (now - lastProgressRecordTime < PROGRESS_RECORD_INTERVAL_MS) {
+            return;
+        }
+        lastProgressRecordTime = now;
+
+        // Get current stats
+        const dbStats = await pool.query(`
+            SELECT
+                COUNT(*) as total_properties,
+                COUNT(*) FILTER (WHERE standard_status = 'Active') as active_properties
+            FROM mls.properties
+        `);
+
+        const mediaStats = await pool.query(`
+            SELECT
+                COUNT(*) as total_media,
+                COUNT(*) FILTER (WHERE local_url IS NOT NULL) as downloaded_media,
+                COUNT(*) FILTER (WHERE local_url IS NULL AND (media_category IS NULL OR media_category != 'Video')) as missing_media
+            FROM mls.media
+        `);
+
+        const missingMediaProps = await pool.query(`
+            SELECT COUNT(DISTINCT p.listing_key) as count
+            FROM mls.properties p
+            WHERE p.photo_count > 0
+              AND EXISTS (
+                SELECT 1 FROM mls.media m
+                WHERE m.listing_key = p.listing_key
+                  AND m.local_url IS NULL
+                  AND (m.media_category IS NULL OR m.media_category != 'Video')
+              )
+        `);
+
+        const totalMedia = parseInt(mediaStats.rows[0].total_media);
+        const downloadedMedia = parseInt(mediaStats.rows[0].downloaded_media);
+        const missingMedia = parseInt(mediaStats.rows[0].missing_media);
+        const downloadPercentage = totalMedia > 0 ? Math.round((downloadedMedia / totalMedia) * 100) : 0;
+
+        // Insert progress record
+        await pool.query(`
+            INSERT INTO mls.progress_history (
+                total_properties, active_properties, total_media, downloaded_media,
+                missing_media, download_percentage, properties_with_missing_media,
+                media_worker_downloads, api_rate_limited, media_cdn_rate_limited
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `, [
+            parseInt(dbStats.rows[0].total_properties),
+            parseInt(dbStats.rows[0].active_properties),
+            totalMedia,
+            downloadedMedia,
+            missingMedia,
+            downloadPercentage,
+            parseInt(missingMediaProps.rows[0].count),
+            mediaWorkerDownloadsThisCycle,
+            isRateLimited,
+            isMediaCdnRateLimited
+        ]);
+
+        console.log(`📊 Progress recorded: ${downloadPercentage}% complete, ${missingMedia} missing`);
+        
+        // Reset counter for next cycle
+        mediaWorkerDownloadsThisCycle = 0;
+
+        // Clean up old records (keep last 7 days)
+        await pool.query(`
+            DELETE FROM mls.progress_history
+            WHERE recorded_at < NOW() - INTERVAL '7 days'
+        `);
+    } catch (error: any) {
+        // Don't fail the sync if progress recording fails
+        // Table might not exist yet
+        if (!error.message?.includes('does not exist')) {
+            console.error('Failed to record progress history:', error);
+        }
+    }
 }
 
 async function getHighWaterMark(resource: string): Promise<string | null> {
@@ -1572,6 +1659,9 @@ async function runETL(): Promise<void> {
         // Retry failed media downloads (runs after main sync to avoid competing for rate limits)
         await retryFailedMediaDownloads();
         
+        // Record progress history (every 15 minutes)
+        await recordProgressHistory();
+        
         const duration = Math.round((Date.now() - startTime) / 1000);
         console.log(`\n${'='.repeat(60)}`);
         console.log(`[${new Date().toISOString()}] ETL sync cycle complete (${duration}s)`);
@@ -1713,6 +1803,7 @@ async function runMediaDownloadWorker(): Promise<void> {
                         );
                         
                         downloadedCount++;
+                        mediaWorkerDownloadsThisCycle++;
                         failedMediaTracker.delete(item.MediaKey);
                         
                     } catch (err: any) {
