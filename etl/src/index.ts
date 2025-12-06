@@ -1752,6 +1752,28 @@ async function runMediaDownloadWorker(): Promise<void> {
 
             if (data && data.Media && data.Media.length > 0) {
                 console.log(`[Media Worker] MLS API returned ${data.Media.length} media items for ${row.listing_key}`);
+                
+                // Get the MediaKeys from the API response
+                const apiMediaKeys = new Set(data.Media.map((m: any) => m.MediaKey));
+                
+                // Find orphaned media in DB (media that API no longer returns)
+                const orphanedResult = await pool.query(`
+                    SELECT media_key FROM mls.media
+                    WHERE listing_key = $1
+                      AND local_url IS NULL
+                      AND (media_category IS NULL OR media_category != 'Video')
+                      AND media_key NOT IN (SELECT unnest($2::text[]))
+                `, [row.listing_key, Array.from(apiMediaKeys)]);
+                
+                if (orphanedResult.rows.length > 0) {
+                    // Delete orphaned media records - they no longer exist in the MLS
+                    const orphanedKeys = orphanedResult.rows.map(r => r.media_key);
+                    console.log(`[Media Worker] Cleaning up ${orphanedKeys.length} orphaned media records for ${row.listing_key}`);
+                    await pool.query(`
+                        DELETE FROM mls.media WHERE media_key = ANY($1::text[])
+                    `, [orphanedKeys]);
+                }
+                
                 let downloadedCount = 0;
                 let skippedCount = 0;
                 
