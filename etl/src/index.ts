@@ -136,11 +136,16 @@ interface UnitType {
 
 async function getHighWaterMark(resource: string): Promise<string | null> {
     const result = await pool.query(
-        `SELECT last_modification_ts FROM mls.sync_state 
+        `SELECT last_modification_ts FROM mls.sync_state
      WHERE resource = $1 AND originating_system_name = $2`,
         [resource, ORIGINATING_SYSTEM]
     );
-    return result.rows[0]?.last_modification_ts || null;
+    // PostgreSQL returns Date objects, convert to ISO string for consistent comparison
+    const timestamp = result.rows[0]?.last_modification_ts;
+    if (timestamp instanceof Date) {
+        return timestamp.toISOString();
+    }
+    return timestamp || null;
 }
 
 async function setHighWaterMark(resource: string, timestamp: string): Promise<void> {
