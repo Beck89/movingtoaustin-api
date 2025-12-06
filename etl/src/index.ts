@@ -1373,6 +1373,8 @@ async function retryFailedMediaDownloads(): Promise<void> {
 
         let skippedCount = 0;
         let queuedCount = 0;
+        let alreadyDownloadedCount = 0;
+        let noUrlCount = 0;
 
         // Re-fetch each property with fresh Media URLs
         for (const row of result.rows) {
@@ -1395,6 +1397,7 @@ async function retryFailedMediaDownloads(): Promise<void> {
                             [item.MediaKey]
                         );
                         if (existingMedia.rows.length > 0) {
+                            alreadyDownloadedCount++;
                             continue; // Already downloaded
                         }
                         
@@ -1427,6 +1430,11 @@ async function retryFailedMediaDownloads(): Promise<void> {
                         // Queue download with fresh URL
                         const isVideo = item.MediaCategory === 'Video' ||
                             (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));
+
+                        if (!item.MediaURL) {
+                            noUrlCount++;
+                            continue;
+                        }
 
                         if (item.MediaURL && !isVideo) {
                             queuedCount++;
@@ -1493,7 +1501,7 @@ async function retryFailedMediaDownloads(): Promise<void> {
             }
         }
 
-        console.log(`📈 Media recovery: ${queuedCount} queued, ${skippedCount} skipped (failed/cooldown)`);
+        console.log(`📈 Media recovery: ${queuedCount} queued, ${skippedCount} skipped (failed/cooldown), ${alreadyDownloadedCount} already downloaded, ${noUrlCount} no URL`);
         
         // Log overall progress
         const remainingResult = await pool.query(`
