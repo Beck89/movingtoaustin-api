@@ -1744,12 +1744,14 @@ async function runMediaDownloadWorker(): Promise<void> {
             }
 
             const row = result.rows[0];
+            console.log(`[Media Worker] Processing ${row.listing_key} (${row.missing_count} missing in DB)`);
             
             // Fetch fresh media URLs from MLS API
             const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey`;
             const data = await fetchMLSData(endpoint, {});
 
             if (data && data.Media && data.Media.length > 0) {
+                console.log(`[Media Worker] MLS API returned ${data.Media.length} media items for ${row.listing_key}`);
                 let downloadedCount = 0;
                 let skippedCount = 0;
                 
@@ -1833,9 +1835,8 @@ async function runMediaDownloadWorker(): Promise<void> {
                     await new Promise(resolve => setTimeout(resolve, 350));
                 }
                 
-                if (downloadedCount > 0 || skippedCount > 0) {
-                    console.log(`[Media Worker] ${row.listing_key}: ${downloadedCount} downloaded, ${skippedCount} skipped. ${totalMissing - downloadedCount} remaining.`);
-                }
+                // Always log progress for debugging
+                console.log(`[Media Worker] ${row.listing_key}: ${downloadedCount} downloaded, ${skippedCount} skipped (of ${data.Media.length} from API). ${totalMissing - downloadedCount} remaining.`);
             }
             
             // Small delay before processing next property
