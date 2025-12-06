@@ -789,7 +789,8 @@ async function syncProperties(): Promise<void> {
     }
 
     let highWater = await getHighWaterMark('Property');
-    let maxTimestamp = highWater;
+    let maxTimestamp: string | null = null; // Start with null, not highWater
+    console.log(`📍 Starting sync with high water mark: ${highWater || 'none'}`);
 
     // Build filter
     const filters = [
@@ -890,10 +891,14 @@ async function syncProperties(): Promise<void> {
 
         // Update high-water mark after each batch to ensure progress is saved
         // This prevents re-processing the same properties if sync is interrupted
-        if (maxTimestamp && maxTimestamp !== highWater) {
-            await setHighWaterMark('Property', maxTimestamp);
-            console.log(`Updated high-water mark to ${maxTimestamp}`);
-            highWater = maxTimestamp; // Update local copy to avoid redundant DB writes
+        if (maxTimestamp) {
+            // Only update if we have a new max timestamp that's different from current high water
+            const shouldUpdate = !highWater || maxTimestamp > highWater;
+            if (shouldUpdate) {
+                await setHighWaterMark('Property', maxTimestamp);
+                console.log(`📍 Updated high-water mark: ${highWater || 'none'} -> ${maxTimestamp}`);
+                highWater = maxTimestamp; // Update local copy to avoid redundant DB writes
+            }
         }
 
         // Rate limiting: Minimum 500ms delay to ensure max 2 RPS
