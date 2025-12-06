@@ -1341,11 +1341,26 @@ async function retryFailedMediaDownloads(): Promise<void> {
             return;
         }
         
-        console.log(`📊 Total missing media: ${totalMissing}`);
+        // Count how many properties have missing media
+        const propertiesWithMissingResult = await pool.query(`
+            SELECT COUNT(DISTINCT p.listing_key) as count
+            FROM mls.properties p
+            WHERE p.photo_count > 0
+              AND EXISTS (
+                SELECT 1 FROM mls.media m
+                WHERE m.listing_key = p.listing_key
+                  AND m.local_url IS NULL
+                  AND (m.media_category IS NULL OR m.media_category != 'Video')
+              )
+        `);
+        const propertiesWithMissing = parseInt(propertiesWithMissingResult.rows[0]?.count || '0', 10);
+        console.log(`📊 Total missing media: ${totalMissing} across ${propertiesWithMissing} properties`);
 
         // Find properties with missing media - process more aggressively
         // Use a larger batch size to catch up faster
-        const recoveryBatchSize = Math.min(MEDIA_RECOVERY_BATCH_SIZE * 5, 50); // Up to 50 properties
+        // With ~35k missing media and ~15 photos per property, we need to process ~2,400 properties
+        // Process 200 properties per cycle to catch up in ~12 cycles (6 hours at 30 min intervals)
+        const recoveryBatchSize = Math.min(MEDIA_RECOVERY_BATCH_SIZE * 20, 200); // Up to 200 properties
         
         const result = await pool.query(`
             SELECT p.listing_key, p.modification_timestamp,
@@ -1564,6 +1579,185 @@ async function runETL(): Promise<void> {
     }
 }
 
+// Continuous media download worker - runs independently of the main sync
+async function runMediaDownloadWorker(): Promise<void> {
+    console.log(`\n📸 Starting continuous media download worker...`);
+    
+    const s3Configured = process.env.S3_ENDPOINT && process.env.S3_BUCKET &&
+        process.env.S3_ACCESS_KEY_ID && process.env.S3_SECRET_ACCESS_KEY;
+
+    if (!s3Configured) {
+        console.log('⏭️  Media download worker disabled - S3/R2 storage not configured');
+        return;
+    }
+
+    // Run continuously with a small delay between batches
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        try {
+            // Check if we're rate limited
+            if (isRateLimited && rateLimitResetTime && rateLimitResetTime > new Date()) {
+                const minutesLeft = Math.ceil((rateLimitResetTime.getTime() - Date.now()) / 60000);
+                console.log(`⏸️  Media worker paused - rate limited for ${minutesLeft} more minutes`);
+                // Wait until rate limit expires
+                await new Promise(resolve => setTimeout(resolve, Math.min(minutesLeft * 60 * 1000, 60000)));
+                continue;
+            }
+            
+            // Reset rate limit flag if cooldown expired
+            if (isRateLimited && rateLimitResetTime && rateLimitResetTime <= new Date()) {
+                console.log(`✅ Rate limit cooldown expired, resuming media downloads`);
+                isRateLimited = false;
+                rateLimitResetTime = null;
+            }
+
+            // Get count of total missing media
+            const countResult = await pool.query(`
+                SELECT COUNT(*) as total_missing
+                FROM mls.media m
+                WHERE m.local_url IS NULL
+                  AND (m.media_category IS NULL OR m.media_category != 'Video')
+                  AND m.media_url IS NOT NULL
+            `);
+            const totalMissing = parseInt(countResult.rows[0]?.total_missing || '0', 10);
+            
+            if (totalMissing === 0) {
+                console.log('✅ All media has been downloaded. Worker sleeping for 5 minutes...');
+                await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000));
+                continue;
+            }
+
+            // Find a single property with missing media
+            const result = await pool.query(`
+                SELECT p.listing_key,
+                       (SELECT COUNT(*) FROM mls.media m WHERE m.listing_key = p.listing_key AND m.local_url IS NULL AND (m.media_category IS NULL OR m.media_category != 'Video')) as missing_count
+                FROM mls.properties p
+                WHERE p.photo_count > 0
+                  AND EXISTS (
+                    SELECT 1 FROM mls.media m
+                    WHERE m.listing_key = p.listing_key
+                      AND m.local_url IS NULL
+                      AND (m.media_category IS NULL OR m.media_category != 'Video')
+                  )
+                ORDER BY p.modification_timestamp DESC
+                LIMIT 1
+            `);
+
+            if (result.rows.length === 0) {
+                console.log('✅ No properties with missing media. Worker sleeping for 5 minutes...');
+                await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000));
+                continue;
+            }
+
+            const row = result.rows[0];
+            
+            // Fetch fresh media URLs from MLS API
+            const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey`;
+            const data = await fetchMLSData(endpoint, {});
+
+            if (data && data.Media && data.Media.length > 0) {
+                let downloadedCount = 0;
+                let skippedCount = 0;
+                
+                for (const item of data.Media) {
+                    // Check rate limit
+                    if (isRateLimited) {
+                        break;
+                    }
+                    
+                    // Check if already downloaded
+                    const existingMedia = await pool.query(
+                        `SELECT local_url FROM mls.media WHERE media_key = $1 AND local_url IS NOT NULL`,
+                        [item.MediaKey]
+                    );
+                    if (existingMedia.rows.length > 0) {
+                        continue; // Already downloaded
+                    }
+                    
+                    // Check if permanently failed
+                    const failedInfo = failedMediaTracker.get(item.MediaKey);
+                    if (failedInfo?.permanentlyFailed) {
+                        skippedCount++;
+                        continue;
+                    }
+
+                    // Skip videos
+                    const isVideo = item.MediaCategory === 'Video' ||
+                        (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));
+                    if (!item.MediaURL || isVideo) {
+                        continue;
+                    }
+
+                    // Update the media_url with fresh token
+                    await pool.query(
+                        `UPDATE mls.media SET media_url = $1, media_modification_ts = $2 WHERE media_key = $3`,
+                        [item.MediaURL, item.MediaModificationTimestamp, item.MediaKey]
+                    );
+
+                    // Download directly (not queued) - one at a time
+                    try {
+                        const localUrl = await downloadAndUploadMedia(
+                            item.MediaURL,
+                            row.listing_key,
+                            item.Order || 0,
+                            item.MediaCategory || 'Photo'
+                        );
+                        
+                        await pool.query(
+                            'UPDATE mls.media SET local_url = $1 WHERE media_key = $2',
+                            [localUrl, item.MediaKey]
+                        );
+                        
+                        downloadedCount++;
+                        failedMediaTracker.delete(item.MediaKey);
+                        
+                    } catch (err: any) {
+                        if (err.message?.includes('429')) {
+                            isRateLimited = true;
+                            rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000);
+                            console.log(`[Media Worker] Rate limited! Pausing for 10 minutes...`);
+                            break;
+                        }
+                        
+                        // Track failed media
+                        const existing = failedMediaTracker.get(item.MediaKey) || { attempts: 0, lastAttempt: new Date(), permanentlyFailed: false };
+                        existing.attempts++;
+                        existing.lastAttempt = new Date();
+                        
+                        if (err.message?.includes('404') || err.message?.includes('403')) {
+                            existing.permanentlyFailed = true;
+                        }
+                        
+                        failedMediaTracker.set(item.MediaKey, existing);
+                        skippedCount++;
+                    }
+                    
+                    // Small delay between downloads to respect rate limits
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                
+                if (downloadedCount > 0 || skippedCount > 0) {
+                    console.log(`[Media Worker] ${row.listing_key}: ${downloadedCount} downloaded, ${skippedCount} skipped. ${totalMissing - downloadedCount} remaining.`);
+                }
+            }
+            
+            // Small delay before processing next property
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+        } catch (error: any) {
+            if (error.message?.includes('429')) {
+                isRateLimited = true;
+                rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000);
+                console.log(`[Media Worker] Rate limited! Pausing for 10 minutes...`);
+            } else {
+                console.error('[Media Worker] Error:', error);
+            }
+            // Wait a bit before retrying on error
+            await new Promise(resolve => setTimeout(resolve, 5000));
+        }
+    }
+}
+
 // Initialize: Configure Meilisearch, then start ETL
 async function initialize(): Promise<void> {
     console.log(`Starting ETL worker (interval: ${INTERVAL_MINUTES} minutes)`);
@@ -1577,6 +1771,12 @@ async function initialize(): Promise<void> {
 
         // Configure Meilisearch index on startup
         await configureMeilisearchIndex();
+
+        // Start the continuous media download worker in the background
+        // This runs independently of the main sync cycle
+        runMediaDownloadWorker().catch(err => {
+            console.error('Media download worker crashed:', err);
+        });
 
         // Run first sync
         await runETL();
