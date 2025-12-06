@@ -57,6 +57,97 @@ let mediaWorkerDownloadsThisCycle = 0;
 let lastProgressRecordTime = 0;
 const PROGRESS_RECORD_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
+// Adaptive rate limiting for media downloads
+interface RateLimitStats {
+    successfulDownloads: number;
+    rateLimitHits: number;
+    lastRateLimitTime: Date | null;
+    lastSuccessTime: Date | null;
+    downloadDelayMs: number;
+    windowStartTime: Date;
+    downloadsInWindow: number;
+    rateLimitsInWindow: number;
+}
+
+const mediaRateLimitStats: RateLimitStats = {
+    successfulDownloads: 0,
+    rateLimitHits: 0,
+    lastRateLimitTime: null,
+    lastSuccessTime: null,
+    downloadDelayMs: 500, // Start with 500ms delay (~2 RPS)
+    windowStartTime: new Date(),
+    downloadsInWindow: 0,
+    rateLimitsInWindow: 0,
+};
+
+const MIN_DOWNLOAD_DELAY_MS = 200;  // Max ~5 RPS
+const MAX_DOWNLOAD_DELAY_MS = 2000; // Min ~0.5 RPS
+const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minute window for stats
+
+function recordMediaDownloadSuccess(): void {
+    mediaRateLimitStats.successfulDownloads++;
+    mediaRateLimitStats.downloadsInWindow++;
+    mediaRateLimitStats.lastSuccessTime = new Date();
+    
+    // If we've had many successful downloads without rate limits, speed up
+    if (mediaRateLimitStats.downloadsInWindow >= 50 && mediaRateLimitStats.rateLimitsInWindow === 0) {
+        const newDelay = Math.max(MIN_DOWNLOAD_DELAY_MS, mediaRateLimitStats.downloadDelayMs - 50);
+        if (newDelay !== mediaRateLimitStats.downloadDelayMs) {
+            console.log(`[Rate Limit Tuning] Speeding up: ${mediaRateLimitStats.downloadDelayMs}ms -> ${newDelay}ms (${mediaRateLimitStats.downloadsInWindow} successful, 0 rate limits)`);
+            mediaRateLimitStats.downloadDelayMs = newDelay;
+        }
+        // Reset window
+        mediaRateLimitStats.windowStartTime = new Date();
+        mediaRateLimitStats.downloadsInWindow = 0;
+        mediaRateLimitStats.rateLimitsInWindow = 0;
+    }
+    
+    // Reset window if it's been too long
+    const windowAge = Date.now() - mediaRateLimitStats.windowStartTime.getTime();
+    if (windowAge > RATE_LIMIT_WINDOW_MS) {
+        mediaRateLimitStats.windowStartTime = new Date();
+        mediaRateLimitStats.downloadsInWindow = 0;
+        mediaRateLimitStats.rateLimitsInWindow = 0;
+    }
+}
+
+function recordMediaRateLimitHit(): void {
+    mediaRateLimitStats.rateLimitHits++;
+    mediaRateLimitStats.rateLimitsInWindow++;
+    
+    const now = new Date();
+    const timeSinceLastRateLimit = mediaRateLimitStats.lastRateLimitTime
+        ? now.getTime() - mediaRateLimitStats.lastRateLimitTime.getTime()
+        : null;
+    
+    mediaRateLimitStats.lastRateLimitTime = now;
+    
+    // Slow down when we hit rate limits
+    const newDelay = Math.min(MAX_DOWNLOAD_DELAY_MS, mediaRateLimitStats.downloadDelayMs + 100);
+    
+    console.log(`[Rate Limit Tuning] Slowing down: ${mediaRateLimitStats.downloadDelayMs}ms -> ${newDelay}ms`);
+    console.log(`[Rate Limit Stats] Total: ${mediaRateLimitStats.successfulDownloads} successful, ${mediaRateLimitStats.rateLimitHits} rate limits`);
+    console.log(`[Rate Limit Stats] Window: ${mediaRateLimitStats.downloadsInWindow} successful, ${mediaRateLimitStats.rateLimitsInWindow} rate limits`);
+    if (timeSinceLastRateLimit) {
+        console.log(`[Rate Limit Stats] Time since last rate limit: ${Math.round(timeSinceLastRateLimit / 1000)}s`);
+    }
+    
+    mediaRateLimitStats.downloadDelayMs = newDelay;
+    
+    // Reset window on rate limit
+    mediaRateLimitStats.windowStartTime = new Date();
+    mediaRateLimitStats.downloadsInWindow = 0;
+    mediaRateLimitStats.rateLimitsInWindow = 0;
+}
+
+function getMediaDownloadDelay(): number {
+    return mediaRateLimitStats.downloadDelayMs;
+}
+
+function getMediaRateLimitStats(): RateLimitStats {
+    return { ...mediaRateLimitStats };
+}
+
 interface Property {
     ListingKey: string;
     ListingId?: string;
@@ -1829,12 +1920,14 @@ async function runMediaDownloadWorker(): Promise<void> {
                         downloadedCount++;
                         mediaWorkerDownloadsThisCycle++;
                         failedMediaTracker.delete(item.MediaKey);
+                        recordMediaDownloadSuccess();
                         
                     } catch (err: any) {
                         if (err.message?.includes('429')) {
                             // Media CDN rate limit - use shorter cooldown (2 minutes)
                             isMediaCdnRateLimited = true;
                             mediaCdnRateLimitResetTime = new Date(Date.now() + 2 * 60 * 1000);
+                            recordMediaRateLimitHit();
                             console.log(`[Media Worker] CDN rate limited! Pausing for 2 minutes...`);
                             break;
                         }
@@ -1852,9 +1945,9 @@ async function runMediaDownloadWorker(): Promise<void> {
                         skippedCount++;
                     }
                     
-                    // Small delay between downloads to respect rate limits
-                    // ~350ms delay + ~700ms download = ~1 RPS which works well
-                    await new Promise(resolve => setTimeout(resolve, 350));
+                    // Adaptive delay between downloads based on rate limit patterns
+                    const delay = getMediaDownloadDelay();
+                    await new Promise(resolve => setTimeout(resolve, delay));
                 }
                 
                 // Always log progress for debugging
