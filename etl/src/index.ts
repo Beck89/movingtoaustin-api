@@ -44,9 +44,13 @@ const failedMediaTracker = new Map<string, { attempts: number; lastAttempt: Date
 const MAX_MEDIA_ATTEMPTS_PER_CYCLE = 3;  // Max attempts per sync cycle before skipping
 const MEDIA_RETRY_COOLDOWN_MS = 5 * 60 * 1000;  // 5 minutes cooldown (shorter - we want to retry soon)
 
-// Track if we're currently rate limited (global flag)
+// Track if we're currently rate limited (global flag for API)
 let isRateLimited = false;
 let rateLimitResetTime: Date | null = null;
+
+// Separate rate limit tracking for media CDN (different from API rate limits)
+let isMediaCdnRateLimited = false;
+let mediaCdnRateLimitResetTime: Date | null = null;
 
 interface Property {
     ListingKey: string;
@@ -1595,20 +1599,20 @@ async function runMediaDownloadWorker(): Promise<void> {
     // eslint-disable-next-line no-constant-condition
     while (true) {
         try {
-            // Check if we're rate limited
-            if (isRateLimited && rateLimitResetTime && rateLimitResetTime > new Date()) {
-                const minutesLeft = Math.ceil((rateLimitResetTime.getTime() - Date.now()) / 60000);
-                console.log(`⏸️  Media worker paused - rate limited for ${minutesLeft} more minutes`);
-                // Wait until rate limit expires
+            // Check if media CDN is rate limited (separate from API rate limits)
+            if (isMediaCdnRateLimited && mediaCdnRateLimitResetTime && mediaCdnRateLimitResetTime > new Date()) {
+                const minutesLeft = Math.ceil((mediaCdnRateLimitResetTime.getTime() - Date.now()) / 60000);
+                console.log(`⏸️  Media worker paused - CDN rate limited for ${minutesLeft} more minutes`);
+                // Wait until rate limit expires (check every minute)
                 await new Promise(resolve => setTimeout(resolve, Math.min(minutesLeft * 60 * 1000, 60000)));
                 continue;
             }
             
-            // Reset rate limit flag if cooldown expired
-            if (isRateLimited && rateLimitResetTime && rateLimitResetTime <= new Date()) {
-                console.log(`✅ Rate limit cooldown expired, resuming media downloads`);
-                isRateLimited = false;
-                rateLimitResetTime = null;
+            // Reset media CDN rate limit flag if cooldown expired
+            if (isMediaCdnRateLimited && mediaCdnRateLimitResetTime && mediaCdnRateLimitResetTime <= new Date()) {
+                console.log(`✅ Media CDN rate limit cooldown expired, resuming downloads`);
+                isMediaCdnRateLimited = false;
+                mediaCdnRateLimitResetTime = null;
             }
 
             // Get count of total missing media
@@ -1660,8 +1664,8 @@ async function runMediaDownloadWorker(): Promise<void> {
                 let skippedCount = 0;
                 
                 for (const item of data.Media) {
-                    // Check rate limit
-                    if (isRateLimited) {
+                    // Check media CDN rate limit (separate from API)
+                    if (isMediaCdnRateLimited) {
                         break;
                     }
                     
@@ -1713,9 +1717,10 @@ async function runMediaDownloadWorker(): Promise<void> {
                         
                     } catch (err: any) {
                         if (err.message?.includes('429')) {
-                            isRateLimited = true;
-                            rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000);
-                            console.log(`[Media Worker] Rate limited! Pausing for 10 minutes...`);
+                            // Media CDN rate limit - use shorter cooldown (2 minutes)
+                            isMediaCdnRateLimited = true;
+                            mediaCdnRateLimitResetTime = new Date(Date.now() + 2 * 60 * 1000);
+                            console.log(`[Media Worker] CDN rate limited! Pausing for 2 minutes...`);
                             break;
                         }
                         
@@ -1733,7 +1738,8 @@ async function runMediaDownloadWorker(): Promise<void> {
                     }
                     
                     // Small delay between downloads to respect rate limits
-                    await new Promise(resolve => setTimeout(resolve, 500));
+                    // ~350ms delay + ~700ms download = ~1 RPS which works well
+                    await new Promise(resolve => setTimeout(resolve, 350));
                 }
                 
                 if (downloadedCount > 0 || skippedCount > 0) {
@@ -1746,9 +1752,10 @@ async function runMediaDownloadWorker(): Promise<void> {
             
         } catch (error: any) {
             if (error.message?.includes('429')) {
-                isRateLimited = true;
-                rateLimitResetTime = new Date(Date.now() + 10 * 60 * 1000);
-                console.log(`[Media Worker] Rate limited! Pausing for 10 minutes...`);
+                // Media CDN rate limit - use shorter cooldown (2 minutes)
+                isMediaCdnRateLimited = true;
+                mediaCdnRateLimitResetTime = new Date(Date.now() + 2 * 60 * 1000);
+                console.log(`[Media Worker] CDN rate limited! Pausing for 2 minutes...`);
             } else {
                 console.error('[Media Worker] Error:', error);
             }
