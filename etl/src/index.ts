@@ -48,104 +48,109 @@ const MEDIA_RETRY_COOLDOWN_MS = 5 * 60 * 1000;  // 5 minutes cooldown (shorter -
 let isRateLimited = false;
 let rateLimitResetTime: Date | null = null;
 
-// Separate rate limit tracking for media CDN (different from API rate limits)
-let isMediaCdnRateLimited = false;
-let mediaCdnRateLimitResetTime: Date | null = null;
-
 // Track media worker downloads for progress history
 let mediaWorkerDownloadsThisCycle = 0;
 let lastProgressRecordTime = 0;
 const PROGRESS_RECORD_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
-// Adaptive rate limiting for media downloads
-interface RateLimitStats {
-    successfulDownloads: number;
-    rateLimitHits: number;
+// Smart adaptive rate limiting for media downloads
+// Goal: Find the optimal download speed that avoids rate limits entirely
+// Key insight: Remember what worked, and go back to it on rate limit
+
+interface SmartRateLimitState {
+    // Current delay between downloads
+    currentDelayMs: number;
+    // Last known delay that worked without rate limits (our safe fallback)
+    lastWorkingDelayMs: number;
+    // Consecutive successful downloads at current delay
+    consecutiveSuccesses: number;
+    // Total stats for logging
+    totalSuccessful: number;
+    totalRateLimits: number;
+    // Last rate limit time for cooldown
     lastRateLimitTime: Date | null;
-    lastSuccessTime: Date | null;
-    downloadDelayMs: number;
-    windowStartTime: Date;
-    downloadsInWindow: number;
-    rateLimitsInWindow: number;
+    // Is currently in cooldown
+    inCooldown: boolean;
 }
 
-const mediaRateLimitStats: RateLimitStats = {
-    successfulDownloads: 0,
-    rateLimitHits: 0,
+// Start with 350ms delay (which worked well before) - ~2.8 RPS
+const INITIAL_DELAY_MS = 350;
+const MIN_DELAY_MS = 250;       // Never go faster than ~4 RPS
+const MAX_DELAY_MS = 500;       // Never go slower than 2 RPS (we want to finish!)
+const SPEED_UP_THRESHOLD = 200; // Speed up after 200 consecutive successes (very conservative)
+const SPEED_UP_AMOUNT_MS = 10;  // Speed up by only 10ms at a time (very conservative)
+const RATE_LIMIT_BUFFER_MS = 50; // Add 50ms buffer when returning to last working delay
+const RATE_LIMIT_COOLDOWN_MS = 30 * 1000; // 30 second cooldown after rate limit
+
+const smartRateLimit: SmartRateLimitState = {
+    currentDelayMs: INITIAL_DELAY_MS,
+    lastWorkingDelayMs: INITIAL_DELAY_MS,
+    consecutiveSuccesses: 0,
+    totalSuccessful: 0,
+    totalRateLimits: 0,
     lastRateLimitTime: null,
-    lastSuccessTime: null,
-    downloadDelayMs: 500, // Start with 500ms delay (~2 RPS)
-    windowStartTime: new Date(),
-    downloadsInWindow: 0,
-    rateLimitsInWindow: 0,
+    inCooldown: false,
 };
 
-const MIN_DOWNLOAD_DELAY_MS = 200;  // Max ~5 RPS
-const MAX_DOWNLOAD_DELAY_MS = 2000; // Min ~0.5 RPS
-const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minute window for stats
-
 function recordMediaDownloadSuccess(): void {
-    mediaRateLimitStats.successfulDownloads++;
-    mediaRateLimitStats.downloadsInWindow++;
-    mediaRateLimitStats.lastSuccessTime = new Date();
+    smartRateLimit.totalSuccessful++;
+    smartRateLimit.consecutiveSuccesses++;
+    smartRateLimit.inCooldown = false;
     
-    // If we've had many successful downloads without rate limits, speed up
-    if (mediaRateLimitStats.downloadsInWindow >= 50 && mediaRateLimitStats.rateLimitsInWindow === 0) {
-        const newDelay = Math.max(MIN_DOWNLOAD_DELAY_MS, mediaRateLimitStats.downloadDelayMs - 50);
-        if (newDelay !== mediaRateLimitStats.downloadDelayMs) {
-            console.log(`[Rate Limit Tuning] Speeding up: ${mediaRateLimitStats.downloadDelayMs}ms -> ${newDelay}ms (${mediaRateLimitStats.downloadsInWindow} successful, 0 rate limits)`);
-            mediaRateLimitStats.downloadDelayMs = newDelay;
+    // Remember this delay as working
+    smartRateLimit.lastWorkingDelayMs = smartRateLimit.currentDelayMs;
+    
+    // If we've had many consecutive successes, try speeding up very slightly
+    if (smartRateLimit.consecutiveSuccesses >= SPEED_UP_THRESHOLD) {
+        const newDelay = Math.max(MIN_DELAY_MS, smartRateLimit.currentDelayMs - SPEED_UP_AMOUNT_MS);
+        if (newDelay < smartRateLimit.currentDelayMs) {
+            console.log(`[Rate Limit] 🚀 Speeding up: ${smartRateLimit.currentDelayMs}ms -> ${newDelay}ms (${smartRateLimit.consecutiveSuccesses} consecutive successes)`);
+            smartRateLimit.currentDelayMs = newDelay;
         }
-        // Reset window
-        mediaRateLimitStats.windowStartTime = new Date();
-        mediaRateLimitStats.downloadsInWindow = 0;
-        mediaRateLimitStats.rateLimitsInWindow = 0;
+        smartRateLimit.consecutiveSuccesses = 0; // Reset counter
     }
     
-    // Reset window if it's been too long
-    const windowAge = Date.now() - mediaRateLimitStats.windowStartTime.getTime();
-    if (windowAge > RATE_LIMIT_WINDOW_MS) {
-        mediaRateLimitStats.windowStartTime = new Date();
-        mediaRateLimitStats.downloadsInWindow = 0;
-        mediaRateLimitStats.rateLimitsInWindow = 0;
+    // Log progress every 500 downloads
+    if (smartRateLimit.totalSuccessful % 500 === 0) {
+        console.log(`[Rate Limit] 📊 Progress: ${smartRateLimit.totalSuccessful} successful, ${smartRateLimit.totalRateLimits} rate limits, current delay: ${smartRateLimit.currentDelayMs}ms`);
     }
 }
 
 function recordMediaRateLimitHit(): void {
-    mediaRateLimitStats.rateLimitHits++;
-    mediaRateLimitStats.rateLimitsInWindow++;
+    smartRateLimit.totalRateLimits++;
+    smartRateLimit.consecutiveSuccesses = 0; // Reset success streak
+    smartRateLimit.lastRateLimitTime = new Date();
+    smartRateLimit.inCooldown = true;
     
-    const now = new Date();
-    const timeSinceLastRateLimit = mediaRateLimitStats.lastRateLimitTime
-        ? now.getTime() - mediaRateLimitStats.lastRateLimitTime.getTime()
-        : null;
+    // Go back to last known working delay + a small buffer
+    // This is the key insight: don't slow down arbitrarily, go back to what worked
+    const newDelay = Math.min(MAX_DELAY_MS, smartRateLimit.lastWorkingDelayMs + RATE_LIMIT_BUFFER_MS);
     
-    mediaRateLimitStats.lastRateLimitTime = now;
+    console.log(`[Rate Limit] ⚠️ Hit rate limit! Reverting to safe delay: ${smartRateLimit.currentDelayMs}ms -> ${newDelay}ms (last working: ${smartRateLimit.lastWorkingDelayMs}ms + ${RATE_LIMIT_BUFFER_MS}ms buffer)`);
+    console.log(`[Rate Limit] 📊 Stats: ${smartRateLimit.totalSuccessful} successful, ${smartRateLimit.totalRateLimits} rate limits`);
+    console.log(`[Rate Limit] ⏸️ Cooling down for ${RATE_LIMIT_COOLDOWN_MS / 1000} seconds...`);
     
-    // Slow down when we hit rate limits
-    const newDelay = Math.min(MAX_DOWNLOAD_DELAY_MS, mediaRateLimitStats.downloadDelayMs + 100);
-    
-    console.log(`[Rate Limit Tuning] Slowing down: ${mediaRateLimitStats.downloadDelayMs}ms -> ${newDelay}ms`);
-    console.log(`[Rate Limit Stats] Total: ${mediaRateLimitStats.successfulDownloads} successful, ${mediaRateLimitStats.rateLimitHits} rate limits`);
-    console.log(`[Rate Limit Stats] Window: ${mediaRateLimitStats.downloadsInWindow} successful, ${mediaRateLimitStats.rateLimitsInWindow} rate limits`);
-    if (timeSinceLastRateLimit) {
-        console.log(`[Rate Limit Stats] Time since last rate limit: ${Math.round(timeSinceLastRateLimit / 1000)}s`);
-    }
-    
-    mediaRateLimitStats.downloadDelayMs = newDelay;
-    
-    // Reset window on rate limit
-    mediaRateLimitStats.windowStartTime = new Date();
-    mediaRateLimitStats.downloadsInWindow = 0;
-    mediaRateLimitStats.rateLimitsInWindow = 0;
+    smartRateLimit.currentDelayMs = newDelay;
 }
 
 function getMediaDownloadDelay(): number {
-    return mediaRateLimitStats.downloadDelayMs;
+    return smartRateLimit.currentDelayMs;
 }
 
-function getMediaRateLimitStats(): RateLimitStats {
-    return { ...mediaRateLimitStats };
+function isInRateLimitCooldown(): boolean {
+    if (!smartRateLimit.inCooldown || !smartRateLimit.lastRateLimitTime) return false;
+    const timeSinceRateLimit = Date.now() - smartRateLimit.lastRateLimitTime.getTime();
+    if (timeSinceRateLimit >= RATE_LIMIT_COOLDOWN_MS) {
+        smartRateLimit.inCooldown = false;
+        return false;
+    }
+    return true;
+}
+
+function getRateLimitCooldownRemaining(): number {
+    if (!smartRateLimit.lastRateLimitTime) return 0;
+    const timeSinceRateLimit = Date.now() - smartRateLimit.lastRateLimitTime.getTime();
+    return Math.max(0, RATE_LIMIT_COOLDOWN_MS - timeSinceRateLimit);
 }
 
 interface Property {
@@ -294,7 +299,7 @@ async function recordProgressHistory(): Promise<void> {
             parseInt(missingMediaProps.rows[0].count),
             mediaWorkerDownloadsThisCycle,
             isRateLimited,
-            isMediaCdnRateLimited
+            smartRateLimit.inCooldown
         ]);
 
         console.log(`📊 Progress recorded: ${downloadPercentage}% complete, ${missingMedia} missing`);
@@ -1780,20 +1785,13 @@ async function runMediaDownloadWorker(): Promise<void> {
     // eslint-disable-next-line no-constant-condition
     while (true) {
         try {
-            // Check if media CDN is rate limited (separate from API rate limits)
-            if (isMediaCdnRateLimited && mediaCdnRateLimitResetTime && mediaCdnRateLimitResetTime > new Date()) {
-                const minutesLeft = Math.ceil((mediaCdnRateLimitResetTime.getTime() - Date.now()) / 60000);
-                console.log(`⏸️  Media worker paused - CDN rate limited for ${minutesLeft} more minutes`);
-                // Wait until rate limit expires (check every minute)
-                await new Promise(resolve => setTimeout(resolve, Math.min(minutesLeft * 60 * 1000, 60000)));
+            // Check if we're in rate limit cooldown
+            if (isInRateLimitCooldown()) {
+                const secondsLeft = Math.ceil(getRateLimitCooldownRemaining() / 1000);
+                console.log(`⏸️  Media worker paused - cooling down for ${secondsLeft} more seconds`);
+                // Wait until cooldown expires
+                await new Promise(resolve => setTimeout(resolve, getRateLimitCooldownRemaining() + 100));
                 continue;
-            }
-            
-            // Reset media CDN rate limit flag if cooldown expired
-            if (isMediaCdnRateLimited && mediaCdnRateLimitResetTime && mediaCdnRateLimitResetTime <= new Date()) {
-                console.log(`✅ Media CDN rate limit cooldown expired, resuming downloads`);
-                isMediaCdnRateLimited = false;
-                mediaCdnRateLimitResetTime = null;
             }
 
             // Get count of total missing media
@@ -1869,8 +1867,8 @@ async function runMediaDownloadWorker(): Promise<void> {
                 let skippedCount = 0;
                 
                 for (const item of data.Media) {
-                    // Check media CDN rate limit (separate from API)
-                    if (isMediaCdnRateLimited) {
+                    // Check if we're in rate limit cooldown
+                    if (isInRateLimitCooldown()) {
                         break;
                     }
                     
@@ -1924,11 +1922,8 @@ async function runMediaDownloadWorker(): Promise<void> {
                         
                     } catch (err: any) {
                         if (err.message?.includes('429')) {
-                            // Media CDN rate limit - use shorter cooldown (2 minutes)
-                            isMediaCdnRateLimited = true;
-                            mediaCdnRateLimitResetTime = new Date(Date.now() + 2 * 60 * 1000);
+                            // Media CDN rate limit - record it and break
                             recordMediaRateLimitHit();
-                            console.log(`[Media Worker] CDN rate limited! Pausing for 2 minutes...`);
                             break;
                         }
                         
@@ -1959,10 +1954,8 @@ async function runMediaDownloadWorker(): Promise<void> {
             
         } catch (error: any) {
             if (error.message?.includes('429')) {
-                // Media CDN rate limit - use shorter cooldown (2 minutes)
-                isMediaCdnRateLimited = true;
-                mediaCdnRateLimitResetTime = new Date(Date.now() + 2 * 60 * 1000);
-                console.log(`[Media Worker] CDN rate limited! Pausing for 2 minutes...`);
+                // Media CDN rate limit - record it
+                recordMediaRateLimitHit();
             } else {
                 console.error('[Media Worker] Error:', error);
             }
