@@ -48,6 +48,13 @@ const MEDIA_RETRY_COOLDOWN_MS = 5 * 60 * 1000;  // 5 minutes cooldown (shorter -
 let isRateLimited = false;
 let rateLimitResetTime: Date | null = null;
 
+// Track API rate limit separately from CDN rate limit
+// API rate limit is from MLS Grid API (fetchMLSData calls)
+// CDN rate limit is from media downloads
+let isApiRateLimited = false;
+let apiRateLimitResetTime: Date | null = null;
+const API_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes for API rate limit
+
 // Track media worker downloads for progress history
 let mediaWorkerDownloadsThisCycle = 0;
 let lastProgressRecordTime = 0;
@@ -138,6 +145,17 @@ function getMediaDownloadDelay(): number {
 }
 
 function isInRateLimitCooldown(): boolean {
+    // Check API rate limit first (longer cooldown)
+    if (isApiRateLimited && apiRateLimitResetTime) {
+        if (apiRateLimitResetTime > new Date()) {
+            return true;
+        }
+        // API rate limit expired
+        isApiRateLimited = false;
+        apiRateLimitResetTime = null;
+    }
+    
+    // Check CDN rate limit (shorter cooldown)
     if (!smartRateLimit.inCooldown || !smartRateLimit.lastRateLimitTime) return false;
     const timeSinceRateLimit = Date.now() - smartRateLimit.lastRateLimitTime.getTime();
     if (timeSinceRateLimit >= RATE_LIMIT_COOLDOWN_MS) {
@@ -148,9 +166,23 @@ function isInRateLimitCooldown(): boolean {
 }
 
 function getRateLimitCooldownRemaining(): number {
+    // Check API rate limit first (longer cooldown)
+    if (isApiRateLimited && apiRateLimitResetTime) {
+        const remaining = apiRateLimitResetTime.getTime() - Date.now();
+        if (remaining > 0) return remaining;
+    }
+    
+    // Check CDN rate limit
     if (!smartRateLimit.lastRateLimitTime) return 0;
     const timeSinceRateLimit = Date.now() - smartRateLimit.lastRateLimitTime.getTime();
     return Math.max(0, RATE_LIMIT_COOLDOWN_MS - timeSinceRateLimit);
+}
+
+// Record API rate limit hit (from fetchMLSData calls)
+function recordApiRateLimitHit(): void {
+    isApiRateLimited = true;
+    apiRateLimitResetTime = new Date(Date.now() + API_RATE_LIMIT_COOLDOWN_MS);
+    console.log(`[API Rate Limit] ⚠️ Hit MLS Grid API rate limit! Cooling down for ${API_RATE_LIMIT_COOLDOWN_MS / 60000} minutes until ${apiRateLimitResetTime.toISOString()}`);
 }
 
 interface Property {
@@ -1955,8 +1987,15 @@ async function runMediaDownloadWorker(): Promise<void> {
             
         } catch (error: any) {
             if (error.message?.includes('429')) {
-                // Media CDN rate limit - record it
-                recordMediaRateLimitHit();
+                // Check if this is an API rate limit (from fetchMLSData) or CDN rate limit (from media download)
+                // API rate limits come from api.mlsgrid.com, CDN rate limits come from media downloads
+                if (error.message?.includes('api.mlsgrid.com') || error.message?.includes('MLS API')) {
+                    // MLS Grid API rate limit - use longer cooldown
+                    recordApiRateLimitHit();
+                } else {
+                    // Media CDN rate limit - use shorter cooldown
+                    recordMediaRateLimitHit();
+                }
             } else if (error.message?.includes('400') && error.message?.includes('Resource not found')) {
                 // Property no longer exists in MLS - delete it from our database
                 // Note: currentListingKey is defined in the try block, so we need to extract it from the error or query
