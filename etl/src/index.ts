@@ -1833,14 +1833,15 @@ async function runMediaDownloadWorker(): Promise<void> {
             }
 
             const row = result.rows[0];
-            console.log(`[Media Worker] Processing ${row.listing_key} (${row.missing_count} missing in DB)`);
+            const currentListingKey = row.listing_key; // Store for use in catch block
+            console.log(`[Media Worker] Processing ${currentListingKey} (${row.missing_count} missing in DB)`);
             
             // Fetch fresh media URLs from MLS API
-            const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey`;
+            const endpoint = `/Property('${currentListingKey}')?$expand=Media&$select=ListingKey`;
             const data = await fetchMLSData(endpoint, {});
 
             if (data && data.Media && data.Media.length > 0) {
-                console.log(`[Media Worker] MLS API returned ${data.Media.length} media items for ${row.listing_key}`);
+                console.log(`[Media Worker] MLS API returned ${data.Media.length} media items for ${currentListingKey}`);
                 
                 // Get the MediaKeys from the API response
                 const apiMediaKeys = new Set(data.Media.map((m: any) => m.MediaKey));
@@ -1857,7 +1858,7 @@ async function runMediaDownloadWorker(): Promise<void> {
                 if (orphanedResult.rows.length > 0) {
                     // Delete orphaned media records - they no longer exist in the MLS
                     const orphanedKeys = orphanedResult.rows.map(r => r.media_key);
-                    console.log(`[Media Worker] Cleaning up ${orphanedKeys.length} orphaned media records for ${row.listing_key}`);
+                    console.log(`[Media Worker] Cleaning up ${orphanedKeys.length} orphaned media records for ${currentListingKey}`);
                     await pool.query(`
                         DELETE FROM mls.media WHERE media_key = ANY($1::text[])
                     `, [orphanedKeys]);
@@ -1905,7 +1906,7 @@ async function runMediaDownloadWorker(): Promise<void> {
                     try {
                         const localUrl = await downloadAndUploadMedia(
                             item.MediaURL,
-                            row.listing_key,
+                            currentListingKey,
                             item.Order || 0,
                             item.MediaCategory || 'Photo'
                         );
@@ -1946,7 +1947,7 @@ async function runMediaDownloadWorker(): Promise<void> {
                 }
                 
                 // Always log progress for debugging
-                console.log(`[Media Worker] ${row.listing_key}: ${downloadedCount} downloaded, ${skippedCount} skipped (of ${data.Media.length} from API). ${totalMissing - downloadedCount} remaining.`);
+                console.log(`[Media Worker] ${currentListingKey}: ${downloadedCount} downloaded, ${skippedCount} skipped (of ${data.Media.length} from API). ${totalMissing - downloadedCount} remaining.`);
             }
             
             // Small delay before processing next property
@@ -1956,6 +1957,30 @@ async function runMediaDownloadWorker(): Promise<void> {
             if (error.message?.includes('429')) {
                 // Media CDN rate limit - record it
                 recordMediaRateLimitHit();
+            } else if (error.message?.includes('400') && error.message?.includes('Resource not found')) {
+                // Property no longer exists in MLS - delete it from our database
+                // Note: currentListingKey is defined in the try block, so we need to extract it from the error or query
+                // The error message contains the listing key in the URL
+                const urlMatch = error.message?.match(/Property\('([^']+)'\)/);
+                const orphanedListingKey = urlMatch?.[1];
+                
+                if (orphanedListingKey) {
+                    console.log(`[Media Worker] Property ${orphanedListingKey} no longer exists in MLS, deleting from database...`);
+                    try {
+                        // Delete media first (foreign key constraint)
+                        await pool.query('DELETE FROM mls.media WHERE listing_key = $1', [orphanedListingKey]);
+                        // Delete the property
+                        await pool.query('DELETE FROM mls.properties WHERE listing_key = $1', [orphanedListingKey]);
+                        // Delete from search index
+                        const index = searchClient.index(INDEX_NAME);
+                        await index.deleteDocument(orphanedListingKey);
+                        console.log(`[Media Worker] Deleted orphaned property ${orphanedListingKey}`);
+                    } catch (deleteError) {
+                        console.error('[Media Worker] Failed to delete orphaned property:', deleteError);
+                    }
+                } else {
+                    console.error('[Media Worker] Resource not found error but could not extract listing key:', error.message);
+                }
             } else {
                 console.error('[Media Worker] Error:', error);
             }
