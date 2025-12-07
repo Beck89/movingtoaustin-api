@@ -83,10 +83,10 @@ interface SmartRateLimitState {
 // Start with 350ms delay (which worked well before) - ~2.8 RPS
 const INITIAL_DELAY_MS = 350;
 const MIN_DELAY_MS = 250;       // Never go faster than ~4 RPS
-const MAX_DELAY_MS = 500;       // Never go slower than 2 RPS (we want to finish!)
+const MAX_DELAY_MS = 2000;      // Allow up to 2 seconds delay (0.5 RPS) when rate limited
 const SPEED_UP_THRESHOLD = 200; // Speed up after 200 consecutive successes (very conservative)
 const SPEED_UP_AMOUNT_MS = 10;  // Speed up by only 10ms at a time (very conservative)
-const RATE_LIMIT_BUFFER_MS = 50; // Add 50ms buffer when returning to last working delay
+const RATE_LIMIT_BUFFER_MS = 100; // Add 100ms buffer when hitting rate limit (was 50ms)
 const RATE_LIMIT_COOLDOWN_MS = 30 * 1000; // 30 second cooldown after rate limit
 
 const smartRateLimit: SmartRateLimitState = {
@@ -129,15 +129,19 @@ function recordMediaRateLimitHit(): void {
     smartRateLimit.lastRateLimitTime = new Date();
     smartRateLimit.inCooldown = true;
     
-    // Go back to last known working delay + a small buffer
-    // This is the key insight: don't slow down arbitrarily, go back to what worked
-    const newDelay = Math.min(MAX_DELAY_MS, smartRateLimit.lastWorkingDelayMs + RATE_LIMIT_BUFFER_MS);
+    // ALWAYS increase the delay when we hit a rate limit
+    // Add buffer to CURRENT delay, not last working delay
+    // This ensures we keep slowing down if we keep hitting rate limits
+    const newDelay = Math.min(MAX_DELAY_MS, smartRateLimit.currentDelayMs + RATE_LIMIT_BUFFER_MS);
     
-    console.log(`[Rate Limit] ⚠️ Hit rate limit! Reverting to safe delay: ${smartRateLimit.currentDelayMs}ms -> ${newDelay}ms (last working: ${smartRateLimit.lastWorkingDelayMs}ms + ${RATE_LIMIT_BUFFER_MS}ms buffer)`);
+    console.log(`[Rate Limit] ⚠️ Hit rate limit! Increasing delay: ${smartRateLimit.currentDelayMs}ms -> ${newDelay}ms (+${RATE_LIMIT_BUFFER_MS}ms)`);
     console.log(`[Rate Limit] 📊 Stats: ${smartRateLimit.totalSuccessful} successful, ${smartRateLimit.totalRateLimits} rate limits`);
     console.log(`[Rate Limit] ⏸️ Cooling down for ${RATE_LIMIT_COOLDOWN_MS / 1000} seconds...`);
     
     smartRateLimit.currentDelayMs = newDelay;
+    // Also update lastWorkingDelayMs to the new slower delay
+    // This prevents us from speeding back up too quickly
+    smartRateLimit.lastWorkingDelayMs = newDelay;
 }
 
 function getMediaDownloadDelay(): number {
