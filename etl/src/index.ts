@@ -53,7 +53,13 @@ let rateLimitResetTime: Date | null = null;
 // CDN rate limit is from media downloads
 let isApiRateLimited = false;
 let apiRateLimitResetTime: Date | null = null;
-const API_RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes for API rate limit
+const API_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes for API rate limit (half of 1-hour rolling window)
+
+// Track properties that cause API rate limits - skip them temporarily
+// Key: listing_key, Value: { hitCount: number, lastHit: Date }
+const apiRateLimitedProperties = new Map<string, { hitCount: number; lastHit: Date }>();
+const API_RATE_LIMIT_PROPERTY_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour cooldown for properties that cause rate limits
+const MAX_API_RATE_LIMIT_HITS_PER_PROPERTY = 2; // Skip property after 2 rate limit hits
 
 // Track media worker downloads for progress history
 let mediaWorkerDownloadsThisCycle = 0;
@@ -183,10 +189,42 @@ function getRateLimitCooldownRemaining(): number {
 }
 
 // Record API rate limit hit (from fetchMLSData calls)
-function recordApiRateLimitHit(): void {
+function recordApiRateLimitHit(listingKey?: string): void {
     isApiRateLimited = true;
     apiRateLimitResetTime = new Date(Date.now() + API_RATE_LIMIT_COOLDOWN_MS);
     console.log(`[API Rate Limit] ⚠️ Hit MLS Grid API rate limit! Cooling down for ${API_RATE_LIMIT_COOLDOWN_MS / 60000} minutes until ${apiRateLimitResetTime.toISOString()}`);
+    
+    // Track which property caused the rate limit
+    if (listingKey) {
+        const existing = apiRateLimitedProperties.get(listingKey) || { hitCount: 0, lastHit: new Date() };
+        existing.hitCount++;
+        existing.lastHit = new Date();
+        apiRateLimitedProperties.set(listingKey, existing);
+        console.log(`[API Rate Limit] Property ${listingKey} has caused ${existing.hitCount} rate limit hits`);
+    }
+}
+
+// Check if a property should be skipped due to causing too many API rate limits
+function shouldSkipPropertyDueToRateLimit(listingKey: string): boolean {
+    const info = apiRateLimitedProperties.get(listingKey);
+    if (!info) return false;
+    
+    // Check if cooldown has expired
+    const timeSinceLastHit = Date.now() - info.lastHit.getTime();
+    if (timeSinceLastHit >= API_RATE_LIMIT_PROPERTY_COOLDOWN_MS) {
+        // Cooldown expired, reset and allow
+        apiRateLimitedProperties.delete(listingKey);
+        return false;
+    }
+    
+    // Skip if too many hits
+    if (info.hitCount >= MAX_API_RATE_LIMIT_HITS_PER_PROPERTY) {
+        const minutesLeft = Math.ceil((API_RATE_LIMIT_PROPERTY_COOLDOWN_MS - timeSinceLastHit) / 60000);
+        console.log(`[API Rate Limit] Skipping property ${listingKey} - caused ${info.hitCount} rate limits, cooldown for ${minutesLeft} more minutes`);
+        return true;
+    }
+    
+    return false;
 }
 
 interface Property {
@@ -1870,10 +1908,49 @@ async function runMediaDownloadWorker(): Promise<void> {
 
             const row = result.rows[0];
             const currentListingKey = row.listing_key; // Store for use in catch block
-            console.log(`[Media Worker] Processing ${currentListingKey} (${row.missing_count} missing in DB)`);
+            
+            // Check if this property should be skipped due to causing API rate limits
+            if (shouldSkipPropertyDueToRateLimit(currentListingKey)) {
+                // Find a different property to process
+                const alternateResult = await pool.query(`
+                    SELECT p.listing_key,
+                           (SELECT COUNT(*) FROM mls.media m WHERE m.listing_key = p.listing_key AND m.local_url IS NULL AND (m.media_category IS NULL OR m.media_category != 'Video')) as missing_count
+                    FROM mls.properties p
+                    WHERE p.photo_count > 0
+                      AND p.listing_key != $1
+                      AND EXISTS (
+                        SELECT 1 FROM mls.media m
+                        WHERE m.listing_key = p.listing_key
+                          AND m.local_url IS NULL
+                          AND (m.media_category IS NULL OR m.media_category != 'Video')
+                      )
+                    ORDER BY p.modification_timestamp DESC
+                    LIMIT 10
+                `, [currentListingKey]);
+                
+                // Find one that's not rate limited
+                let foundAlternate = false;
+                for (const altRow of alternateResult.rows) {
+                    if (!shouldSkipPropertyDueToRateLimit(altRow.listing_key)) {
+                        console.log(`[Media Worker] Switching to alternate property ${altRow.listing_key} (${altRow.missing_count} missing)`);
+                        row.listing_key = altRow.listing_key;
+                        row.missing_count = altRow.missing_count;
+                        foundAlternate = true;
+                        break;
+                    }
+                }
+                
+                if (!foundAlternate) {
+                    console.log(`[Media Worker] All properties are rate limited, sleeping for 5 minutes...`);
+                    await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000));
+                    continue;
+                }
+            }
+            
+            console.log(`[Media Worker] Processing ${row.listing_key} (${row.missing_count} missing in DB)`);
             
             // Fetch fresh media URLs from MLS API
-            const endpoint = `/Property('${currentListingKey}')?$expand=Media&$select=ListingKey`;
+            const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey`;
             const data = await fetchMLSData(endpoint, {});
 
             if (data && data.Media && data.Media.length > 0) {
@@ -1983,7 +2060,7 @@ async function runMediaDownloadWorker(): Promise<void> {
                 }
                 
                 // Always log progress for debugging
-                console.log(`[Media Worker] ${currentListingKey}: ${downloadedCount} downloaded, ${skippedCount} skipped (of ${data.Media.length} from API). ${totalMissing - downloadedCount} remaining.`);
+                console.log(`[Media Worker] ${row.listing_key}: ${downloadedCount} downloaded, ${skippedCount} skipped (of ${data.Media.length} from API). ${totalMissing - downloadedCount} remaining.`);
             }
             
             // Small delay before processing next property
@@ -1995,7 +2072,10 @@ async function runMediaDownloadWorker(): Promise<void> {
                 // API rate limits come from api.mlsgrid.com, CDN rate limits come from media downloads
                 if (error.message?.includes('api.mlsgrid.com') || error.message?.includes('MLS API')) {
                     // MLS Grid API rate limit - use longer cooldown
-                    recordApiRateLimitHit();
+                    // Extract listing key from the error context
+                    const urlMatch = error.message?.match(/Property\('([^']+)'\)/);
+                    const rateLimitedListingKey = urlMatch?.[1];
+                    recordApiRateLimitHit(rateLimitedListingKey);
                 } else {
                     // Media CDN rate limit - use shorter cooldown
                     recordMediaRateLimitHit();
