@@ -252,9 +252,37 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
         }
         .history-dl {
             font-size: 0.75rem;
+            padding: 2px 6px;
+            background: rgba(74, 222, 128, 0.15);
+            border-radius: 4px;
+        }
+        .history-new {
+            font-size: 0.75rem;
+            padding: 2px 6px;
+            background: rgba(251, 191, 36, 0.15);
+            border-radius: 4px;
         }
         .history-rl {
             font-size: 0.75rem;
+        }
+        .history-change {
+            font-size: 0.75rem;
+            margin-left: 4px;
+        }
+        .history-legend {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            margin-top: 12px;
+            padding-top: 8px;
+            border-top: 1px solid #2a2a4a;
+            font-size: 0.75rem;
+            color: #888;
+        }
+        .history-legend span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
     </style>
 </head>
@@ -336,20 +364,50 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
     <div class="card">
         <div class="card-title">📈 Progress History (Last 24h)</div>
         <div class="history-list">
-            ${progressHistory.slice(0, 12).map(h => {
+            ${progressHistory.slice(0, 12).map((h, index, arr) => {
                 const time = new Date(h.recorded_at);
                 const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
                 const rateLimited = h.api_rate_limited || h.media_cdn_rate_limited;
+                const currentMissing = parseInt(h.missing_media);
+                
+                // Calculate change from previous record (next in array since sorted DESC)
+                const prevRecord = arr[index + 1];
+                const prevMissing = prevRecord ? parseInt(prevRecord.missing_media) : currentMissing;
+                const missingChange = currentMissing - prevMissing;
+                
+                // Calculate net change: if we downloaded X files but missing went up by Y,
+                // then new media added = X + Y
+                const downloads = h.media_worker_downloads || 0;
+                const newMediaAdded = downloads > 0 ? downloads + missingChange : 0;
+                
+                // Determine the change indicator
+                let changeIndicator = '';
+                if (prevRecord) {
+                    if (missingChange < 0) {
+                        changeIndicator = `<span class="history-change green">↓${Math.abs(missingChange).toLocaleString()}</span>`;
+                    } else if (missingChange > 0) {
+                        changeIndicator = `<span class="history-change yellow">↑${missingChange.toLocaleString()}</span>`;
+                    } else {
+                        changeIndicator = `<span class="history-change">—</span>`;
+                    }
+                }
+                
                 return `
                 <div class="history-row">
                     <span class="history-time">${dateStr} ${timeStr}</span>
                     <span class="history-pct ${h.download_percentage >= 99 ? 'green' : ''}">${h.download_percentage}%</span>
-                    <span class="history-missing">${parseInt(h.missing_media).toLocaleString()} missing</span>
-                    ${h.media_worker_downloads > 0 ? `<span class="history-dl green">+${h.media_worker_downloads}</span>` : ''}
-                    ${rateLimited ? '<span class="history-rl">⏸️</span>' : ''}
+                    <span class="history-missing">${currentMissing.toLocaleString()} missing ${changeIndicator}</span>
+                    ${downloads > 0 ? `<span class="history-dl green" title="Downloaded ${downloads} files">↓${downloads}</span>` : ''}
+                    ${newMediaAdded > 0 ? `<span class="history-new yellow" title="New media added from sync">+${newMediaAdded}</span>` : ''}
+                    ${rateLimited ? '<span class="history-rl" title="Rate limited during this interval">⏸️</span>' : ''}
                 </div>
             `}).join('')}
+        </div>
+        <div class="history-legend">
+            <span><span class="green">↓N</span> = downloaded</span>
+            <span><span class="yellow">+N</span> = new from sync</span>
+            <span>⏸️ = rate limited</span>
         </div>
         ${progressHistory.length > 12 ? `<div class="sub-text" style="margin-top:8px;">${progressHistory.length - 12} more records...</div>` : ''}
     </div>

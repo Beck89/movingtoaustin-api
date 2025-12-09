@@ -86,9 +86,9 @@ interface SmartRateLimitState {
     inCooldown: boolean;
 }
 
-// Start with 1050ms delay (~1 RPS) - conservative to avoid rate limits
-const INITIAL_DELAY_MS = 1050;
-const MIN_DELAY_MS = 1000;      // Never go faster than 1 RPS
+// Start with 1250ms delay (~0.8 RPS) - conservative to avoid rate limits
+const INITIAL_DELAY_MS = 1250;
+const MIN_DELAY_MS = 1250;      // Never go faster than ~0.8 RPS
 const MAX_DELAY_MS = 2000;      // Allow up to 2 seconds delay (0.5 RPS) when rate limited
 const SPEED_UP_THRESHOLD = 200; // Speed up after 200 consecutive successes (very conservative)
 const SPEED_UP_AMOUNT_MS = 10;  // Speed up by only 10ms at a time (very conservative)
