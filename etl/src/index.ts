@@ -780,6 +780,7 @@ async function upsertMedia(listingKey: string, media: Media[], photosChangeTimes
                     // Success - clear from failed tracker and reset rate limit flag
                     failedMediaTracker.delete(item.MediaKey);
                     isRateLimited = false;
+                    mediaWorkerDownloadsSinceLastRecord++; // Track download for progress history
                     await pool.query(
                         `UPDATE mls.media SET local_url = $1 WHERE media_key = $2`,
                         [localUrl, item.MediaKey]
@@ -1743,6 +1744,7 @@ async function retryFailedMediaDownloads(): Promise<void> {
                                     // Success - clear from failed tracker
                                     failedMediaTracker.delete(item.MediaKey);
                                     isRateLimited = false; // Success means we're not rate limited
+                                    mediaWorkerDownloadsSinceLastRecord++; // Track download for progress history
                                     await pool.query(
                                         'UPDATE mls.media SET local_url = $1 WHERE media_key = $2',
                                         [localUrl, item.MediaKey]
