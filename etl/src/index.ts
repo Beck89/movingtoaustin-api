@@ -62,7 +62,8 @@ const API_RATE_LIMIT_PROPERTY_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour cooldown f
 const MAX_API_RATE_LIMIT_HITS_PER_PROPERTY = 2; // Skip property after 2 rate limit hits
 
 // Track media worker downloads for progress history
-let mediaWorkerDownloadsThisCycle = 0;
+// Use a sliding window approach: track downloads since last progress record
+let mediaWorkerDownloadsSinceLastRecord = 0;
 let lastProgressRecordTime = 0;
 const PROGRESS_RECORD_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -356,6 +357,14 @@ async function recordProgressHistory(): Promise<void> {
         const missingMedia = parseInt(mediaStats.rows[0].missing_media);
         const downloadPercentage = totalMedia > 0 ? Math.round((downloadedMedia / totalMedia) * 100) : 0;
 
+        // Capture the current download count BEFORE inserting
+        // This ensures we record exactly what happened since the last record
+        const downloadsToRecord = mediaWorkerDownloadsSinceLastRecord;
+        
+        // Reset counter BEFORE inserting to avoid race condition with media worker
+        // Any downloads that happen after this point will be counted in the next record
+        mediaWorkerDownloadsSinceLastRecord = 0;
+
         // Insert progress record
         await pool.query(`
             INSERT INTO mls.progress_history (
@@ -371,15 +380,12 @@ async function recordProgressHistory(): Promise<void> {
             missingMedia,
             downloadPercentage,
             parseInt(missingMediaProps.rows[0].count),
-            mediaWorkerDownloadsThisCycle,
+            downloadsToRecord,
             isRateLimited,
             smartRateLimit.inCooldown
         ]);
 
-        console.log(`📊 Progress recorded: ${downloadPercentage}% complete, ${missingMedia} missing`);
-        
-        // Reset counter for next cycle
-        mediaWorkerDownloadsThisCycle = 0;
+        console.log(`📊 Progress recorded: ${downloadPercentage}% complete, ${missingMedia} missing, ${downloadsToRecord} downloads this interval`);
 
         // Clean up old records (keep last 7 days)
         await pool.query(`
@@ -2030,7 +2036,7 @@ async function runMediaDownloadWorker(): Promise<void> {
                         );
                         
                         downloadedCount++;
-                        mediaWorkerDownloadsThisCycle++;
+                        mediaWorkerDownloadsSinceLastRecord++;
                         failedMediaTracker.delete(item.MediaKey);
                         recordMediaDownloadSuccess();
                         
