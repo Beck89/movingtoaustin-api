@@ -237,50 +237,65 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
             font-size: 0.75rem;
             margin-top: 20px;
         }
-        .history-list {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8rem;
         }
-        .history-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 8px;
-            background: #1a1a2e;
-            border-radius: 6px;
-            font-size: 0.85rem;
-        }
-        .history-time {
+        .history-table th {
+            text-align: left;
+            padding: 8px 6px;
+            border-bottom: 2px solid #2a2a4a;
             color: #888;
-            min-width: 100px;
+            font-weight: 500;
+            font-size: 0.75rem;
+            text-transform: uppercase;
         }
-        .history-pct {
+        .history-table td {
+            padding: 8px 6px;
+            border-bottom: 1px solid #2a2a4a;
+            vertical-align: middle;
+        }
+        .history-table tr:last-child td {
+            border-bottom: none;
+        }
+        .history-table .time-col {
+            color: #888;
+            white-space: nowrap;
+        }
+        .history-table .pct-col {
             font-weight: 600;
-            min-width: 40px;
+            text-align: center;
         }
-        .history-missing {
-            color: #aaa;
-            flex: 1;
+        .history-table .missing-col {
+            text-align: right;
         }
-        .history-dl {
-            font-size: 0.75rem;
+        .history-table .change-col {
+            text-align: center;
+        }
+        .history-table .dl-col {
+            text-align: center;
+        }
+        .history-table .status-col {
+            text-align: center;
+        }
+        .badge {
+            display: inline-block;
             padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+        .badge-green {
             background: rgba(74, 222, 128, 0.15);
-            border-radius: 4px;
+            color: #4ade80;
         }
-        .history-new {
-            font-size: 0.75rem;
-            padding: 2px 6px;
+        .badge-yellow {
             background: rgba(251, 191, 36, 0.15);
-            border-radius: 4px;
+            color: #fbbf24;
         }
-        .history-rl {
-            font-size: 0.75rem;
-        }
-        .history-change {
-            font-size: 0.75rem;
-            margin-left: 4px;
+        .badge-red {
+            background: rgba(248, 113, 113, 0.15);
+            color: #f87171;
         }
         .history-legend {
             display: flex;
@@ -395,53 +410,74 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
     ${progressHistory.length > 0 ? `
     <div class="card">
         <div class="card-title">📈 Progress History (Last 24h)</div>
-        <div class="history-list">
-            ${progressHistory.slice(0, 12).map((h, index, arr) => {
-                const time = new Date(h.recorded_at);
-                const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
-                const rateLimited = h.api_rate_limited || h.media_cdn_rate_limited;
-                const currentMissing = parseInt(h.missing_media);
-                
-                // Calculate change from previous record (next in array since sorted DESC)
-                const prevRecord = arr[index + 1];
-                const prevMissing = prevRecord ? parseInt(prevRecord.missing_media) : currentMissing;
-                const missingChange = currentMissing - prevMissing;
-                
-                // Calculate net change: if we downloaded X files but missing went up by Y,
-                // then new media added = X + Y
-                const downloads = h.media_worker_downloads || 0;
-                const newMediaAdded = downloads > 0 ? downloads + missingChange : 0;
-                
-                // Determine the change indicator
-                let changeIndicator = '';
-                if (prevRecord) {
-                    if (missingChange < 0) {
-                        changeIndicator = `<span class="history-change green">↓${Math.abs(missingChange).toLocaleString()}</span>`;
-                    } else if (missingChange > 0) {
-                        changeIndicator = `<span class="history-change yellow">↑${missingChange.toLocaleString()}</span>`;
-                    } else {
-                        changeIndicator = `<span class="history-change">—</span>`;
-                    }
-                }
-                
-                return `
-                <div class="history-row">
-                    <span class="history-time">${dateStr} ${timeStr}</span>
-                    <span class="history-pct ${h.download_percentage >= 99 ? 'green' : ''}">${h.download_percentage}%</span>
-                    <span class="history-missing">${currentMissing.toLocaleString()} missing ${changeIndicator}</span>
-                    ${downloads > 0 ? `<span class="history-dl green" title="Downloaded ${downloads} files">↓${downloads}</span>` : ''}
-                    ${newMediaAdded > 0 ? `<span class="history-new yellow" title="New media added from sync">+${newMediaAdded}</span>` : ''}
-                    ${rateLimited ? '<span class="history-rl" title="Rate limited during this interval">⏸️</span>' : ''}
-                </div>
-            `}).join('')}
+        <div style="overflow-x: auto;">
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th style="text-align:center;">%</th>
+                        <th style="text-align:right;">Missing</th>
+                        <th style="text-align:center;">Change</th>
+                        <th style="text-align:center;">Downloaded</th>
+                        <th style="text-align:center;">New</th>
+                        <th style="text-align:center;">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${progressHistory.slice(0, 12).map((h, index, arr) => {
+                        const time = new Date(h.recorded_at);
+                        const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        const dateStr = time.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                        const apiRateLimited = h.api_rate_limited;
+                        const cdnRateLimited = h.media_cdn_rate_limited;
+                        const currentMissing = parseInt(h.missing_media);
+                        
+                        // Calculate change from previous record (next in array since sorted DESC)
+                        const prevRecord = arr[index + 1];
+                        const prevMissing = prevRecord ? parseInt(prevRecord.missing_media) : currentMissing;
+                        const missingChange = currentMissing - prevMissing;
+                        
+                        // Calculate downloads and new media
+                        const downloads = h.media_worker_downloads || 0;
+                        const newMediaAdded = Math.max(0, downloads + missingChange);
+                        
+                        // Determine change badge
+                        let changeBadge = '—';
+                        if (prevRecord) {
+                            if (missingChange < 0) {
+                                changeBadge = '<span class="badge badge-green">↓' + Math.abs(missingChange).toLocaleString() + '</span>';
+                            } else if (missingChange > 0) {
+                                changeBadge = '<span class="badge badge-yellow">↑' + missingChange.toLocaleString() + '</span>';
+                            }
+                        }
+                        
+                        // Determine status
+                        let statusBadge = '<span class="green">✓</span>';
+                        if (apiRateLimited) {
+                            statusBadge = '<span class="badge badge-red" title="API Rate Limited">API ⏸️</span>';
+                        } else if (cdnRateLimited) {
+                            statusBadge = '<span class="badge badge-yellow" title="CDN Rate Limited">CDN ⏸️</span>';
+                        }
+                        
+                        return '<tr>' +
+                            '<td class="time-col">' + dateStr + ' ' + timeStr + '</td>' +
+                            '<td class="pct-col ' + (h.download_percentage >= 99 ? 'green' : '') + '">' + h.download_percentage + '%</td>' +
+                            '<td class="missing-col">' + currentMissing.toLocaleString() + '</td>' +
+                            '<td class="change-col">' + changeBadge + '</td>' +
+                            '<td class="dl-col">' + (downloads > 0 ? '<span class="badge badge-green">↓' + downloads + '</span>' : '—') + '</td>' +
+                            '<td class="dl-col">' + (newMediaAdded > 0 ? '<span class="badge badge-yellow">+' + newMediaAdded + '</span>' : '—') + '</td>' +
+                            '<td class="status-col">' + statusBadge + '</td>' +
+                        '</tr>';
+                    }).join('')}
+                </tbody>
+            </table>
         </div>
         <div class="history-legend">
-            <span><span class="green">↓N</span> = downloaded</span>
-            <span><span class="yellow">+N</span> = new from sync</span>
-            <span>⏸️ = rate limited</span>
+            <span><span class="badge badge-green">↓N</span> = downloaded</span>
+            <span><span class="badge badge-yellow">+N</span> = new from sync</span>
+            <span><span class="badge badge-red">API ⏸️</span> = API rate limited</span>
         </div>
-        ${progressHistory.length > 12 ? `<div class="sub-text" style="margin-top:8px;">${progressHistory.length - 12} more records...</div>` : ''}
+        ${progressHistory.length > 12 ? '<div class="sub-text" style="margin-top:8px;">' + (progressHistory.length - 12) + ' more records...</div>' : ''}
     </div>
     ` : ''}
 

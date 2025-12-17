@@ -4,9 +4,8 @@
 import pool from './db.js';
 import {
     mediaStats,
-    isApiRateLimited,
+    apiRateLimitResetTime,
     resetMediaWorkerDownloads,
-    isRateLimited,
 } from './media-queue.js';
 
 // Progress recording interval (15 minutes)
@@ -18,11 +17,11 @@ let lastProgressRecordTime = 0;
  */
 export async function recordProgressHistory(): Promise<void> {
     try {
-        const now = Date.now();
-        if (now - lastProgressRecordTime < PROGRESS_RECORD_INTERVAL_MS) {
+        const nowMs = Date.now();
+        if (nowMs - lastProgressRecordTime < PROGRESS_RECORD_INTERVAL_MS) {
             return;
         }
-        lastProgressRecordTime = now;
+        lastProgressRecordTime = nowMs;
 
         // Get current stats
         const dbStats = await pool.query(`
@@ -59,6 +58,13 @@ export async function recordProgressHistory(): Promise<void> {
 
         // Get and reset download counter
         const downloadsToRecord = resetMediaWorkerDownloads();
+        
+        // Check actual cooldown status (not just the flag)
+        const nowDate = new Date();
+        const actuallyApiRateLimited = apiRateLimitResetTime ? apiRateLimitResetTime > nowDate : false;
+        const actuallyMediaRateLimited = mediaStats.lastRateLimitTime
+            ? (nowDate.getTime() - mediaStats.lastRateLimitTime.getTime()) < 60000
+            : false;
 
         // Insert progress record
         await pool.query(`
@@ -76,8 +82,8 @@ export async function recordProgressHistory(): Promise<void> {
             downloadPercentage,
             parseInt(missingMediaProps.rows[0].count),
             downloadsToRecord,
-            isApiRateLimited,
-            mediaStats.inCooldown || isRateLimited
+            actuallyApiRateLimited,
+            actuallyMediaRateLimited
         ]);
 
         console.log(`📊 Progress recorded: ${downloadPercentage}% complete, ${missingMedia} missing, ${downloadsToRecord} downloads this interval`);
