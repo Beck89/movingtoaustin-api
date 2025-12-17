@@ -100,8 +100,9 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
         const isHealthy = minutesSinceSync <= syncInterval * 2;
 
         // Calculate ETA for media downloads
-        // Assuming ~1 download per second when not rate limited
-        const etaMinutes = Math.ceil(missingMedia / 60);
+        // With 1.5s delay between downloads = ~40 downloads per minute
+        const downloadsPerMinute = 40;
+        const etaMinutes = Math.ceil(missingMedia / downloadsPerMinute);
         const etaHours = Math.floor(etaMinutes / 60);
         const etaRemainingMinutes = etaMinutes % 60;
 

@@ -1,7 +1,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { request } from 'undici';
 import dotenv from 'dotenv';
-import { rateLimiter } from './rate-limiter.js';
+import { mediaRateLimiter } from './rate-limiter.js';
 
 dotenv.config();
 
@@ -108,7 +108,8 @@ export async function downloadAndUploadMedia(
         }
 
         // Wait for rate limit slot before downloading from MLS Grid
-        await rateLimiter.waitForSlot();
+        // Uses dedicated media rate limiter with 1.5s delay between requests
+        await mediaRateLimiter.waitForSlot();
 
         const afterWait = Date.now();
         console.log(`[Media Download] Starting ${listingKey}/${orderSequence} (waited ${afterWait - startTime}ms)`);
