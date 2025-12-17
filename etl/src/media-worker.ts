@@ -18,6 +18,7 @@ import {
     incrementMediaWorkerDownloads,
     getFailedMediaStats,
 } from './media-queue.js';
+import { getMediaDownloadDelayFromDb } from './rate-limiter.js';
 import type { Media } from './types.js';
 
 // Track properties that cause API rate limits
@@ -287,6 +288,11 @@ export async function runMediaDownloadWorker(): Promise<void> {
                         incrementMediaWorkerDownloads();
                         clearFailedMedia(item.MediaKey);
                         recordMediaDownloadSuccess();
+                        
+                        // Wait after successful download to respect rate limits
+                        // This delay is configurable via the dashboard
+                        const mediaDelay = await getMediaDownloadDelayFromDb();
+                        await new Promise(resolve => setTimeout(resolve, mediaDelay));
                         
                     } catch (err: any) {
                         if (err.message?.includes('429')) {

@@ -11,6 +11,8 @@
  * often hit rate limits at the CDN level, not the API level.
  */
 
+import pool from './db.js';
+
 export class RateLimiter {
     private requestCount = 0;
     private hourlyStartTime = Date.now();
@@ -110,6 +112,71 @@ export class RateLimiter {
 export const rateLimiter = new RateLimiter('API', 550);
 
 // Separate rate limiter for media downloads from MLS Grid CDN
-// Uses 1500ms delay (1.5 seconds between requests) as requested by user
-// Media downloads are more likely to hit rate limits due to data transfer volume
+// Default: 1500ms delay (1.5 seconds between requests)
+// This can be adjusted at runtime via the API
 export const mediaRateLimiter = new RateLimiter('Media', 1500);
+
+// Runtime-configurable delay for media downloads (applied AFTER successful download)
+// This is separate from the rate limiter - it's the pause between completing one download
+// and starting the next request
+let mediaDownloadDelayMs = 1500; // Default 1.5 seconds
+let lastDbFetchTime = 0;
+const DB_FETCH_INTERVAL_MS = 10000; // Check DB every 10 seconds
+
+/**
+ * Get the current media download delay, refreshing from DB periodically
+ */
+export async function getMediaDownloadDelayFromDb(): Promise<number> {
+    const now = Date.now();
+    
+    // Only fetch from DB periodically to reduce load
+    if (now - lastDbFetchTime > DB_FETCH_INTERVAL_MS) {
+        try {
+            const result = await pool.query(
+                `SELECT value FROM mls.settings WHERE key = 'media_download_delay_ms'`
+            );
+            if (result.rows.length > 0) {
+                const dbValue = parseInt(result.rows[0].value, 10);
+                if (!isNaN(dbValue) && dbValue >= 500 && dbValue <= 5000) {
+                    if (dbValue !== mediaDownloadDelayMs) {
+                        console.log(`[Rate Limiter] Media download delay updated from DB: ${dbValue}ms`);
+                        mediaDownloadDelayMs = dbValue;
+                    }
+                }
+            }
+            lastDbFetchTime = now;
+        } catch {
+            // Table might not exist yet, use default
+        }
+    }
+    
+    return mediaDownloadDelayMs;
+}
+
+/**
+ * Get the current media download delay (in-memory value)
+ */
+export function getMediaDownloadDelay(): number {
+    return mediaDownloadDelayMs;
+}
+
+/**
+ * Set media download delay (also persists to DB for cross-process communication)
+ */
+export async function setMediaDownloadDelay(delayMs: number): Promise<void> {
+    // Clamp to reasonable values: 500ms - 5000ms
+    const clampedDelay = Math.max(500, Math.min(5000, delayMs));
+    mediaDownloadDelayMs = clampedDelay;
+    
+    try {
+        await pool.query(
+            `INSERT INTO mls.settings (key, value, updated_at)
+             VALUES ('media_download_delay_ms', $1, NOW())
+             ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+            [clampedDelay.toString()]
+        );
+        console.log(`[Rate Limiter] Media download delay set to ${clampedDelay}ms (saved to DB)`);
+    } catch (err) {
+        console.log(`[Rate Limiter] Media download delay set to ${clampedDelay}ms (DB save failed: ${err})`);
+    }
+}

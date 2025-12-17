@@ -99,9 +99,21 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
         const syncInterval = parseInt(process.env.ETL_INTERVAL_MINUTES || '5', 10);
         const isHealthy = minutesSinceSync <= syncInterval * 2;
 
-        // Calculate ETA for media downloads
-        // With 1.5s delay between downloads = ~40 downloads per minute
-        const downloadsPerMinute = 40;
+        // Get current media delay setting
+        let mediaDelayMs = 1500; // default
+        try {
+            const delayResult = await pool.query(
+                `SELECT value FROM mls.settings WHERE key = 'media_download_delay_ms'`
+            );
+            if (delayResult.rows.length > 0) {
+                mediaDelayMs = parseInt(delayResult.rows[0].value, 10) || 1500;
+            }
+        } catch {
+            // Table might not exist yet
+        }
+
+        // Calculate ETA for media downloads based on current delay setting
+        const downloadsPerMinute = Math.round(60000 / mediaDelayMs);
         const etaMinutes = Math.ceil(missingMedia / downloadsPerMinute);
         const etaHours = Math.floor(etaMinutes / 60);
         const etaRemainingMinutes = etaMinutes % 60;
@@ -331,6 +343,25 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
             <span class="stat-label">Est. Time Remaining</span>
             <span class="stat-value blue">${etaHours > 0 ? etaHours + 'h ' : ''}${etaRemainingMinutes}m</span>
         </div>
+        <div class="stat-row">
+            <span class="stat-label">Download Delay</span>
+            <span class="stat-value" id="delay-display">${mediaDelayMs}ms</span>
+        </div>
+        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #2a2a4a;">
+            <label style="display: block; color: #888; font-size: 0.85rem; margin-bottom: 8px;">
+                Adjust Media Download Delay (500-5000ms)
+            </label>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="range" id="delay-slider" min="500" max="5000" step="100" value="${mediaDelayMs}"
+                    style="flex: 1; accent-color: #4ade80;">
+                <input type="number" id="delay-input" min="500" max="5000" step="100" value="${mediaDelayMs}"
+                    style="width: 80px; background: #1a1a2e; border: 1px solid #2a2a4a; color: #eee; padding: 4px 8px; border-radius: 4px;">
+                <button id="delay-save" style="background: #4ade80; color: #1a1a2e; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: 600;">
+                    Save
+                </button>
+            </div>
+            <div id="delay-status" style="font-size: 0.75rem; color: #888; margin-top: 4px;"></div>
+        </div>
     </div>
 
     <div class="card">
@@ -418,6 +449,51 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
         <p>MLS Grid ETL System</p>
         <p>Sync interval: ${syncInterval} minutes</p>
     </div>
+    
+    <script>
+        // Media delay control
+        const slider = document.getElementById('delay-slider');
+        const input = document.getElementById('delay-input');
+        const saveBtn = document.getElementById('delay-save');
+        const status = document.getElementById('delay-status');
+        const display = document.getElementById('delay-display');
+        
+        // Sync slider and input
+        slider.addEventListener('input', () => {
+            input.value = slider.value;
+        });
+        input.addEventListener('input', () => {
+            const val = Math.max(500, Math.min(5000, parseInt(input.value) || 1500));
+            slider.value = val;
+        });
+        
+        // Save handler
+        saveBtn.addEventListener('click', async () => {
+            const delayMs = parseInt(input.value) || 1500;
+            status.textContent = 'Saving...';
+            status.style.color = '#888';
+            
+            try {
+                const res = await fetch('/status/media-delay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ delayMs })
+                });
+                
+                if (res.ok) {
+                    const data = await res.json();
+                    status.textContent = 'Saved! ETL will pick up the change within 10 seconds.';
+                    status.style.color = '#4ade80';
+                    display.textContent = data.delayMs + 'ms';
+                } else {
+                    throw new Error('Failed to save');
+                }
+            } catch (err) {
+                status.textContent = 'Failed to save. Try again.';
+                status.style.color = '#f87171';
+            }
+        });
+    </script>
 </body>
 </html>`;
 
@@ -659,6 +735,99 @@ router.get('/', async (_req: Request, res: Response) => {
             status: 'error',
             error: 'Failed to fetch status',
             timestamp: new Date().toISOString(),
+        });
+    }
+});
+
+/**
+ * @swagger
+ * /status/media-delay:
+ *   post:
+ *     summary: Update media download delay
+ *     description: Set the delay between media downloads (500-5000ms)
+ *     tags: [System]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               delayMs:
+ *                 type: integer
+ *                 minimum: 500
+ *                 maximum: 5000
+ *     responses:
+ *       200:
+ *         description: Delay updated successfully
+ *       400:
+ *         description: Invalid delay value
+ */
+router.post('/media-delay', async (req: Request, res: Response) => {
+    try {
+        const { delayMs } = req.body;
+        
+        if (typeof delayMs !== 'number' || delayMs < 500 || delayMs > 5000) {
+            return res.status(400).json({
+                error: 'Invalid delay value. Must be between 500 and 5000 ms.'
+            });
+        }
+        
+        const clampedDelay = Math.max(500, Math.min(5000, Math.round(delayMs)));
+        
+        await pool.query(
+            `INSERT INTO mls.settings (key, value, updated_at)
+             VALUES ('media_download_delay_ms', $1, NOW())
+             ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
+            [clampedDelay.toString()]
+        );
+        
+        console.log(`[Dashboard] Media download delay updated to ${clampedDelay}ms`);
+        
+        res.json({
+            success: true,
+            delayMs: clampedDelay,
+            message: 'ETL will pick up this change within 10 seconds'
+        });
+    } catch (error) {
+        console.error('Failed to update media delay:', error);
+        res.status(500).json({
+            error: 'Failed to update media delay'
+        });
+    }
+});
+
+/**
+ * @swagger
+ * /status/media-delay:
+ *   get:
+ *     summary: Get current media download delay
+ *     description: Get the current delay between media downloads
+ *     tags: [System]
+ *     responses:
+ *       200:
+ *         description: Current delay value
+ */
+router.get('/media-delay', async (_req: Request, res: Response) => {
+    try {
+        let delayMs = 1500; // default
+        
+        const result = await pool.query(
+            `SELECT value FROM mls.settings WHERE key = 'media_download_delay_ms'`
+        );
+        
+        if (result.rows.length > 0) {
+            delayMs = parseInt(result.rows[0].value, 10) || 1500;
+        }
+        
+        res.json({
+            delayMs,
+            minDelay: 500,
+            maxDelay: 5000
+        });
+    } catch (error) {
+        res.status(500).json({
+            error: 'Failed to get media delay'
         });
     }
 });

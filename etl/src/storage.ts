@@ -1,7 +1,6 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { request } from 'undici';
 import dotenv from 'dotenv';
-import { mediaRateLimiter } from './rate-limiter.js';
 
 dotenv.config();
 
@@ -107,12 +106,9 @@ export async function downloadAndUploadMedia(
             throw new Error('Media URL has expired - needs refresh from MLS API');
         }
 
-        // Wait for rate limit slot before downloading from MLS Grid
-        // Uses dedicated media rate limiter with 1.5s delay between requests
-        await mediaRateLimiter.waitForSlot();
-
-        const afterWait = Date.now();
-        console.log(`[Media Download] Starting ${listingKey}/${orderSequence} (waited ${afterWait - startTime}ms)`);
+        // No pre-download delay - delay is applied AFTER successful download
+        // in the media worker to ensure proper spacing between requests
+        console.log(`[Media Download] Starting ${listingKey}/${orderSequence}`);
 
         // Download from MLS
         const response = await request(mediaUrl, {
