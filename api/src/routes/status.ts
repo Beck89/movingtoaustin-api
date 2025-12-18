@@ -87,6 +87,64 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
             // Table might not exist yet
         }
 
+        // Get rate limit events (last 24 hours)
+        let rateLimitEvents: any[] = [];
+        let rateLimitSummary: any[] = [];
+        try {
+            const eventsResult = await pool.query(`
+                SELECT
+                    event_type,
+                    source,
+                    listing_key,
+                    created_at,
+                    cooldown_until
+                FROM mls.rate_limit_events
+                WHERE created_at > NOW() - INTERVAL '24 hours'
+                ORDER BY created_at DESC
+                LIMIT 20
+            `);
+            rateLimitEvents = eventsResult.rows;
+
+            const summaryResult = await pool.query(`
+                SELECT
+                    event_type,
+                    COUNT(*)::int as count,
+                    COUNT(DISTINCT listing_key)::int as unique_properties
+                FROM mls.rate_limit_events
+                WHERE created_at > NOW() - INTERVAL '24 hours'
+                GROUP BY event_type
+                ORDER BY count DESC
+            `);
+            rateLimitSummary = summaryResult.rows;
+        } catch {
+            // Table might not exist yet
+        }
+
+        // Get problematic properties
+        let problematicProperties: any[] = [];
+        try {
+            const problemResult = await pool.query(`
+                SELECT
+                    pp.listing_key,
+                    pp.rate_limit_count,
+                    pp.consecutive_fails,
+                    pp.status,
+                    pp.cooldown_until,
+                    pp.last_rate_limit_at,
+                    pp.notes,
+                    p.standard_status as property_status,
+                    (SELECT COUNT(*) FROM mls.media m WHERE m.listing_key = pp.listing_key AND m.local_url IS NULL) as missing_media_count
+                FROM mls.problematic_properties pp
+                LEFT JOIN mls.properties p ON p.listing_key = pp.listing_key
+                WHERE pp.status != 'cleared'
+                ORDER BY pp.rate_limit_count DESC
+                LIMIT 10
+            `);
+            problematicProperties = problemResult.rows;
+        } catch {
+            // Table might not exist yet
+        }
+
         const totalMedia = parseInt(mediaStats.rows[0].total_media);
         const downloadedMedia = parseInt(mediaStats.rows[0].downloaded_media);
         const missingMedia = parseInt(mediaStats.rows[0].missing_media);
@@ -478,6 +536,96 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
             <span><span class="badge badge-red">API ⏸️</span> = API rate limited</span>
         </div>
         ${progressHistory.length > 12 ? '<div class="sub-text" style="margin-top:8px;">' + (progressHistory.length - 12) + ' more records...</div>' : ''}
+    </div>
+    ` : ''}
+
+    ${rateLimitSummary.length > 0 || problematicProperties.length > 0 ? `
+    <div class="card">
+        <div class="card-title">⚠️ Rate Limit Tracking (Last 24h)</div>
+        
+        ${rateLimitSummary.length > 0 ? `
+        <div style="margin-bottom: 16px;">
+            <div style="font-size: 0.85rem; color: #888; margin-bottom: 8px;">Summary</div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+                ${rateLimitSummary.map(s => `
+                    <div style="background: #1a1a2e; padding: 10px; border-radius: 8px; text-align: center;">
+                        <div style="font-size: 1.5rem; font-weight: 700; ${s.event_type.includes('api') ? 'color: #f87171;' : 'color: #fbbf24;'}">${s.count}</div>
+                        <div style="font-size: 0.75rem; color: #888;">${s.event_type === 'api_429' ? 'API 429s' : s.event_type === 'cdn_429' ? 'CDN 429s' : s.event_type}</div>
+                        <div style="font-size: 0.7rem; color: #666;">${s.unique_properties} properties</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+        ` : '<div style="color: #4ade80; text-align: center; padding: 12px;">✓ No rate limit events in last 24h</div>'}
+        
+        ${rateLimitEvents.length > 0 ? `
+        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #2a2a4a;">
+            <div style="font-size: 0.85rem; color: #888; margin-bottom: 8px;">Recent Events</div>
+            <div style="overflow-x: auto;">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Property</th>
+                            <th>Cooldown</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rateLimitEvents.slice(0, 8).map(e => {
+                            const time = new Date(e.created_at);
+                            const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                            const cooldownStr = e.cooldown_until ? new Date(e.cooldown_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+                            const shortKey = e.listing_key ? e.listing_key.substring(0, 12) + '...' : '—';
+                            return '<tr>' +
+                                '<td class="time-col">' + timeStr + '</td>' +
+                                '<td><span class="badge ' + (e.event_type === 'api_429' ? 'badge-red' : 'badge-yellow') + '">' + e.event_type + '</span></td>' +
+                                '<td style="font-family: monospace; font-size: 0.75rem;" title="' + (e.listing_key || '') + '">' + shortKey + '</td>' +
+                                '<td class="time-col">' + cooldownStr + '</td>' +
+                            '</tr>';
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        ` : ''}
+    </div>
+    ` : ''}
+
+    ${problematicProperties.length > 0 ? `
+    <div class="card">
+        <div class="card-title">🚫 Problematic Properties</div>
+        <div style="font-size: 0.85rem; color: #888; margin-bottom: 12px;">Properties consistently triggering rate limits (may need manual review)</div>
+        <div style="overflow-x: auto;">
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Property</th>
+                        <th style="text-align:center;">429 Count</th>
+                        <th style="text-align:center;">Fails</th>
+                        <th>Status</th>
+                        <th>Cooldown Until</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${problematicProperties.map(p => {
+                        const shortKey = p.listing_key ? p.listing_key.substring(0, 12) + '...' : '—';
+                        const cooldownStr = p.cooldown_until ? new Date(p.cooldown_until).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+                        const statusBadge = p.status === 'active' ? 'badge-red' : p.status === 'cooling_down' ? 'badge-yellow' : 'badge-green';
+                        return '<tr>' +
+                            '<td style="font-family: monospace; font-size: 0.75rem;" title="' + p.listing_key + '">' + shortKey + '</td>' +
+                            '<td style="text-align:center;"><span class="badge badge-red">' + p.rate_limit_count + '</span></td>' +
+                            '<td style="text-align:center;">' + p.consecutive_fails + '</td>' +
+                            '<td><span class="badge ' + statusBadge + '">' + p.status + '</span></td>' +
+                            '<td class="time-col">' + cooldownStr + '</td>' +
+                        '</tr>';
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>
+        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #2a2a4a; font-size: 0.75rem; color: #666;">
+            <strong>Note:</strong> Properties with 5+ consecutive fails are skipped for 7 days. Consider deleting chronically problematic properties.
+        </div>
     </div>
     ` : ''}
 

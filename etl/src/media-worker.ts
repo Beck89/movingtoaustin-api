@@ -24,6 +24,12 @@ import {
     getFailedMediaStats,
 } from './media-queue.js';
 import { getMediaDownloadDelayFromDb } from './rate-limiter.js';
+import {
+    logRateLimitEvent,
+    trackProblematicProperty,
+    clearProblematicProperty,
+    cleanupOldEvents
+} from './rate-limit-tracker.js';
 import type { Media } from './types.js';
 
 // Track properties that cause API rate limits
@@ -141,6 +147,10 @@ export async function retryFailedMediaDownloads(): Promise<void> {
     }
 }
 
+// Track last cleanup time for periodic maintenance
+let lastCleanupTime = 0;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // Run cleanup every hour
+
 /**
  * Continuous media download worker - runs independently
  */
@@ -157,6 +167,12 @@ export async function runMediaDownloadWorker(): Promise<void> {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
+        // Periodic cleanup of old rate limit events
+        if (Date.now() - lastCleanupTime > CLEANUP_INTERVAL_MS) {
+            await cleanupOldEvents();
+            lastCleanupTime = Date.now();
+        }
+        
         try {
             // Check if we're in rate limit cooldown
             if (isInRateLimitCooldown()) {
@@ -341,6 +357,15 @@ export async function runMediaDownloadWorker(): Promise<void> {
                     } catch (err: any) {
                         if (err.message?.includes('429')) {
                             recordMediaRateLimitHit();
+                            // Log CDN rate limit to database
+                            await logRateLimitEvent({
+                                eventType: 'cdn_429',
+                                source: 'media_worker',
+                                listingKey: row.listing_key,
+                                endpoint: item.MediaURL?.substring(0, 200),
+                                responseBody: err.message?.substring(0, 500),
+                                cooldownUntil: new Date(Date.now() + 60 * 1000), // 1 min cooldown
+                            });
                             break;
                         }
                         
@@ -350,6 +375,11 @@ export async function runMediaDownloadWorker(): Promise<void> {
                 }
                 
                 console.log(`[Media Worker] ${row.listing_key}: ${downloadedCount} downloaded, ${skippedCount} skipped. ${totalMissing - downloadedCount} remaining.`);
+                
+                // If all media for this property was downloaded successfully, clear it from problematic list
+                if (downloadedCount > 0 && skippedCount === 0) {
+                    await clearProblematicProperty(row.listing_key);
+                }
             }
             
             // Note: No additional delay needed here - we add proper delay BEFORE the next API call
@@ -359,7 +389,19 @@ export async function runMediaDownloadWorker(): Promise<void> {
                 if (error.message?.includes('api.mlsgrid.com') || error.message?.includes('MLS API')) {
                     const urlMatch = error.message?.match(/Property\('([^']+)'\)/);
                     const rateLimitedListingKey = urlMatch?.[1];
+                    const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000); // 30 min cooldown
+                    
                     recordApiRateLimitHit(rateLimitedListingKey);
+                    
+                    // Log API rate limit to database
+                    await logRateLimitEvent({
+                        eventType: 'api_429',
+                        source: 'media_worker',
+                        listingKey: rateLimitedListingKey,
+                        endpoint: `/Property('${rateLimitedListingKey}')?$expand=Media`,
+                        responseBody: error.message?.substring(0, 500),
+                        cooldownUntil,
+                    });
                     
                     // Track the property - MLS Grid appears to have per-property rate limiting
                     // Properties that consistently fail should get progressively longer cooldowns
@@ -373,15 +415,36 @@ export async function runMediaDownloadWorker(): Promise<void> {
                         existing.consecutiveFails++;
                         existing.lastHit = new Date();
                         
-                        // Check if this is a chronic offender (>= 5 consecutive fails)
+                        // Calculate property-specific cooldown
+                        let propertyCooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS;
                         if (existing.consecutiveFails >= CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP) {
+                            propertyCooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS;
                             console.log(`[API Rate Limit] ⚠️ Property ${rateLimitedListingKey} has ${existing.consecutiveFails} consecutive 429s - skipping for 7 days`);
+                        } else if (existing.hitCount >= 4) {
+                            propertyCooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS;
+                        } else if (existing.hitCount >= 2) {
+                            propertyCooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS * Math.pow(2, existing.hitCount - 1);
                         }
+                        
+                        // Log problematic property to database
+                        await trackProblematicProperty(
+                            rateLimitedListingKey,
+                            new Date(Date.now() + propertyCooldownMs),
+                            existing.consecutiveFails,
+                            `API 429 - hit ${existing.hitCount} times total, ${existing.consecutiveFails} consecutive`
+                        );
                         
                         apiRateLimitedProperties.set(rateLimitedListingKey, existing);
                     }
                 } else {
                     recordMediaRateLimitHit();
+                    // Log generic CDN rate limit
+                    await logRateLimitEvent({
+                        eventType: 'cdn_429',
+                        source: 'media_worker',
+                        responseBody: error.message?.substring(0, 500),
+                        cooldownUntil: new Date(Date.now() + 60 * 1000),
+                    });
                 }
             } else if (error.message?.includes('400') && error.message?.includes('Resource not found')) {
                 // Property no longer exists in MLS
