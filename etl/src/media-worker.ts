@@ -37,54 +37,52 @@ import type { Media } from './types.js';
 // NOTE: MLS Grid appears to have per-property rate limiting - properties that consistently
 // fail should be put on long cooldowns to avoid blocking the entire media worker
 const apiRateLimitedProperties = new Map<string, { hitCount: number; lastHit: Date; consecutiveFails: number }>();
-const API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours base
+const API_RATE_LIMIT_FIRST_HIT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes for first hit - skip and come back later
+const API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours base for repeat offenders
 const API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7 days max for chronic offenders
-const MAX_API_RATE_LIMIT_HITS_BEFORE_LONG_COOLDOWN = 2;
 const CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP = 5; // After 5 consecutive 429s, skip for a week
 
 function shouldSkipPropertyDueToRateLimit(listingKey: string): boolean {
     const info = apiRateLimitedProperties.get(listingKey);
     if (!info) return false;
     
-    // If property has had 5+ consecutive 429 failures, it's a "chronic offender"
-    // Skip it for 7 days - something is wrong on MLS Grid's side
-    if (info.consecutiveFails >= CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP) {
-        const timeSinceLastHit = Date.now() - info.lastHit.getTime();
-        if (timeSinceLastHit < API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS) {
-            const daysLeft = ((API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS - timeSinceLastHit) / (24 * 60 * 60 * 1000)).toFixed(1);
-            console.log(`[API Rate Limit] 🚫 CHRONIC: Property ${listingKey} has ${info.consecutiveFails} consecutive 429s. Skipping for ${daysLeft} more days`);
-            return true;
-        }
-        // 7 day cooldown expired - reset consecutive fails and allow retry
-        info.consecutiveFails = 0;
-        console.log(`[API Rate Limit] 7-day cooldown expired for ${listingKey}, resetting consecutive fails counter`);
-    }
+    // Calculate cooldown based on hit count - progressive delays
+    // 1 hit = 5 minutes (just skip and come back)
+    // 2 hits = 2 hours
+    // 3 hits = 8 hours
+    // 4+ hits = 7 days
+    // 5+ consecutive fails = 7 days
+    let cooldownMs: number;
     
-    // Calculate progressive cooldown based on hit count
-    // 2 hits = 2 hours, 3 hits = 8 hours, 4+ hits = 7 days
-    let cooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS;
-    if (info.hitCount >= 4) {
+    if (info.consecutiveFails >= CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP) {
+        cooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS; // 7 days for chronic offenders
+    } else if (info.hitCount >= 4) {
         cooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS; // 7 days
     } else if (info.hitCount >= 2) {
-        cooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS * Math.pow(2, info.hitCount - 1);
+        cooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS * Math.pow(2, info.hitCount - 2); // 2h, 4h, 8h
+    } else {
+        // hitCount = 1 - first hit, skip for 5 minutes
+        cooldownMs = API_RATE_LIMIT_FIRST_HIT_COOLDOWN_MS;
     }
-    cooldownMs = Math.min(cooldownMs, API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS);
     
     const timeSinceLastHit = Date.now() - info.lastHit.getTime();
+    
     if (timeSinceLastHit >= cooldownMs) {
-        // Cooldown expired - don't delete, just allow retry (hit count stays for progressive tracking)
-        console.log(`[API Rate Limit] Cooldown expired for ${listingKey} after ${Math.round(timeSinceLastHit / 60000)}min, allowing retry`);
+        // Cooldown expired - allow retry
+        console.log(`[Rate Limit] Cooldown expired for ${listingKey} after ${Math.round(timeSinceLastHit / 60000)}min, allowing retry`);
         return false;
     }
     
-    if (info.hitCount >= MAX_API_RATE_LIMIT_HITS_BEFORE_LONG_COOLDOWN) {
-        const minutesLeft = Math.ceil((cooldownMs - timeSinceLastHit) / 60000);
-        const hoursLeft = (minutesLeft / 60).toFixed(1);
-        console.log(`[API Rate Limit] Skipping property ${listingKey} - ${info.hitCount} rate limits, cooldown for ${hoursLeft}h (${minutesLeft}min)`);
-        return true;
+    // Property is in cooldown - skip it
+    const secondsLeft = Math.ceil((cooldownMs - timeSinceLastHit) / 1000);
+    if (cooldownMs >= API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS) {
+        const hoursLeft = (secondsLeft / 3600).toFixed(1);
+        console.log(`[Rate Limit] Skipping property ${listingKey} - ${info.hitCount} hits, ${info.consecutiveFails} consecutive, cooldown for ${hoursLeft}h`);
+    } else {
+        console.log(`[Rate Limit] Skipping property ${listingKey} (first hit), trying again in ${secondsLeft}s`);
     }
     
-    return false;
+    return true;
 }
 
 /**
@@ -357,6 +355,34 @@ export async function runMediaDownloadWorker(): Promise<void> {
                     } catch (err: any) {
                         if (err.message?.includes('429')) {
                             recordMediaRateLimitHit();
+                            
+                            // Track property that caused CDN 429 - treat similar to API 429s
+                            const existing = apiRateLimitedProperties.get(row.listing_key) || {
+                                hitCount: 0,
+                                lastHit: new Date(),
+                                consecutiveFails: 0
+                            };
+                            existing.hitCount++;
+                            existing.consecutiveFails++;
+                            existing.lastHit = new Date();
+                            
+                            // Calculate progressive cooldown based on consecutive fails
+                            let propertyCooldownMs: number;
+                            if (existing.consecutiveFails >= CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP) {
+                                propertyCooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS;
+                                console.log(`[CDN Rate Limit] ⚠️ CHRONIC: Property ${row.listing_key} has ${existing.consecutiveFails} consecutive CDN 429s - skipping for 7 days`);
+                            } else if (existing.hitCount >= 4) {
+                                propertyCooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS;
+                            } else if (existing.hitCount >= 2) {
+                                propertyCooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS * Math.pow(2, existing.hitCount - 2);
+                            } else {
+                                // First hit - 5 minute cooldown, move to next property
+                                propertyCooldownMs = API_RATE_LIMIT_FIRST_HIT_COOLDOWN_MS;
+                                console.log(`[CDN Rate Limit] First 429 for ${row.listing_key}, skipping for 5 minutes and moving to next property`);
+                            }
+                            
+                            apiRateLimitedProperties.set(row.listing_key, existing);
+                            
                             // Log CDN rate limit to database
                             await logRateLimitEvent({
                                 eventType: 'cdn_429',
@@ -364,8 +390,17 @@ export async function runMediaDownloadWorker(): Promise<void> {
                                 listingKey: row.listing_key,
                                 endpoint: item.MediaURL?.substring(0, 200),
                                 responseBody: err.message?.substring(0, 500),
-                                cooldownUntil: new Date(Date.now() + 60 * 1000), // 1 min cooldown
+                                cooldownUntil: new Date(Date.now() + propertyCooldownMs),
                             });
+                            
+                            // Track in problematic_properties table
+                            await trackProblematicProperty(
+                                row.listing_key,
+                                new Date(Date.now() + propertyCooldownMs),
+                                existing.consecutiveFails,
+                                `CDN 429 - hit ${existing.hitCount} times total, ${existing.consecutiveFails} consecutive`
+                            );
+                            
                             break;
                         }
                         
@@ -416,14 +451,18 @@ export async function runMediaDownloadWorker(): Promise<void> {
                         existing.lastHit = new Date();
                         
                         // Calculate property-specific cooldown
-                        let propertyCooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS;
+                        let propertyCooldownMs: number;
                         if (existing.consecutiveFails >= CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP) {
                             propertyCooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS;
                             console.log(`[API Rate Limit] ⚠️ Property ${rateLimitedListingKey} has ${existing.consecutiveFails} consecutive 429s - skipping for 7 days`);
                         } else if (existing.hitCount >= 4) {
                             propertyCooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS;
                         } else if (existing.hitCount >= 2) {
-                            propertyCooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS * Math.pow(2, existing.hitCount - 1);
+                            propertyCooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS * Math.pow(2, existing.hitCount - 2);
+                        } else {
+                            // First hit - 5 minute cooldown
+                            propertyCooldownMs = API_RATE_LIMIT_FIRST_HIT_COOLDOWN_MS;
+                            console.log(`[API Rate Limit] First 429 for ${rateLimitedListingKey}, skipping for 5 minutes`);
                         }
                         
                         // Log problematic property to database
