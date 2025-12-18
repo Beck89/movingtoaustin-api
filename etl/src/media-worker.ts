@@ -1,6 +1,11 @@
 /**
  * Continuous media download worker for MLS Grid ETL
  * Runs independently of the main sync cycle to catch up on missing media
+ *
+ * KEY INSIGHT: MLS Grid has per-property rate limiting. Some properties consistently
+ * trigger 429s while other API calls succeed immediately. These "problematic" properties
+ * should be handled separately - either their media URLs are stale, the property is
+ * deleted from MLS, or there's some MLS Grid-side issue.
  */
 import pool from './db.js';
 import { fetchMLSData } from './mls-client.js';
@@ -22,23 +27,54 @@ import { getMediaDownloadDelayFromDb } from './rate-limiter.js';
 import type { Media } from './types.js';
 
 // Track properties that cause API rate limits
-const apiRateLimitedProperties = new Map<string, { hitCount: number; lastHit: Date }>();
-const API_RATE_LIMIT_PROPERTY_COOLDOWN_MS = 60 * 60 * 1000;
-const MAX_API_RATE_LIMIT_HITS_PER_PROPERTY = 2;
+// Properties that repeatedly cause rate limits get progressively longer cooldowns
+// NOTE: MLS Grid appears to have per-property rate limiting - properties that consistently
+// fail should be put on long cooldowns to avoid blocking the entire media worker
+const apiRateLimitedProperties = new Map<string, { hitCount: number; lastHit: Date; consecutiveFails: number }>();
+const API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours base
+const API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7 days max for chronic offenders
+const MAX_API_RATE_LIMIT_HITS_BEFORE_LONG_COOLDOWN = 2;
+const CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP = 5; // After 5 consecutive 429s, skip for a week
 
 function shouldSkipPropertyDueToRateLimit(listingKey: string): boolean {
     const info = apiRateLimitedProperties.get(listingKey);
     if (!info) return false;
     
+    // If property has had 5+ consecutive 429 failures, it's a "chronic offender"
+    // Skip it for 7 days - something is wrong on MLS Grid's side
+    if (info.consecutiveFails >= CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP) {
+        const timeSinceLastHit = Date.now() - info.lastHit.getTime();
+        if (timeSinceLastHit < API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS) {
+            const daysLeft = ((API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS - timeSinceLastHit) / (24 * 60 * 60 * 1000)).toFixed(1);
+            console.log(`[API Rate Limit] 🚫 CHRONIC: Property ${listingKey} has ${info.consecutiveFails} consecutive 429s. Skipping for ${daysLeft} more days`);
+            return true;
+        }
+        // 7 day cooldown expired - reset consecutive fails and allow retry
+        info.consecutiveFails = 0;
+        console.log(`[API Rate Limit] 7-day cooldown expired for ${listingKey}, resetting consecutive fails counter`);
+    }
+    
+    // Calculate progressive cooldown based on hit count
+    // 2 hits = 2 hours, 3 hits = 8 hours, 4+ hits = 7 days
+    let cooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS;
+    if (info.hitCount >= 4) {
+        cooldownMs = API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS; // 7 days
+    } else if (info.hitCount >= 2) {
+        cooldownMs = API_RATE_LIMIT_PROPERTY_BASE_COOLDOWN_MS * Math.pow(2, info.hitCount - 1);
+    }
+    cooldownMs = Math.min(cooldownMs, API_RATE_LIMIT_PROPERTY_MAX_COOLDOWN_MS);
+    
     const timeSinceLastHit = Date.now() - info.lastHit.getTime();
-    if (timeSinceLastHit >= API_RATE_LIMIT_PROPERTY_COOLDOWN_MS) {
-        apiRateLimitedProperties.delete(listingKey);
+    if (timeSinceLastHit >= cooldownMs) {
+        // Cooldown expired - don't delete, just allow retry (hit count stays for progressive tracking)
+        console.log(`[API Rate Limit] Cooldown expired for ${listingKey} after ${Math.round(timeSinceLastHit / 60000)}min, allowing retry`);
         return false;
     }
     
-    if (info.hitCount >= MAX_API_RATE_LIMIT_HITS_PER_PROPERTY) {
-        const minutesLeft = Math.ceil((API_RATE_LIMIT_PROPERTY_COOLDOWN_MS - timeSinceLastHit) / 60000);
-        console.log(`[API Rate Limit] Skipping property ${listingKey} - ${info.hitCount} rate limits, cooldown for ${minutesLeft}min`);
+    if (info.hitCount >= MAX_API_RATE_LIMIT_HITS_BEFORE_LONG_COOLDOWN) {
+        const minutesLeft = Math.ceil((cooldownMs - timeSinceLastHit) / 60000);
+        const hoursLeft = (minutesLeft / 60).toFixed(1);
+        console.log(`[API Rate Limit] Skipping property ${listingKey} - ${info.hitCount} rate limits, cooldown for ${hoursLeft}h (${minutesLeft}min)`);
         return true;
     }
     
@@ -215,6 +251,14 @@ export async function runMediaDownloadWorker(): Promise<void> {
             
             console.log(`[Media Worker] Processing ${row.listing_key} (${row.missing_count} missing in DB)`);
             
+            // IMPORTANT: Wait before making the MLS Grid API call to prevent rate limits
+            // This delay is separate from CDN download delays - it's for the API call to get fresh media URLs
+            // MLS Grid limits: 2 RPS, 7200/hour, 40000/day - we need to be very conservative here
+            // because the main sync process is also making API calls
+            const apiDelay = await getMediaDownloadDelayFromDb();
+            console.log(`[Media Worker] Waiting ${apiDelay}ms before MLS API call...`);
+            await new Promise(resolve => setTimeout(resolve, apiDelay));
+            
             // Fetch fresh media URLs from MLS API
             const endpoint = `/Property('${row.listing_key}')?$expand=Media&$select=ListingKey`;
             const data = await fetchMLSData(endpoint, {});
@@ -308,8 +352,7 @@ export async function runMediaDownloadWorker(): Promise<void> {
                 console.log(`[Media Worker] ${row.listing_key}: ${downloadedCount} downloaded, ${skippedCount} skipped. ${totalMissing - downloadedCount} remaining.`);
             }
             
-            // Small delay before processing next property
-            await new Promise(resolve => setTimeout(resolve, 100));
+            // Note: No additional delay needed here - we add proper delay BEFORE the next API call
             
         } catch (error: any) {
             if (error.message?.includes('429')) {
@@ -318,11 +361,23 @@ export async function runMediaDownloadWorker(): Promise<void> {
                     const rateLimitedListingKey = urlMatch?.[1];
                     recordApiRateLimitHit(rateLimitedListingKey);
                     
-                    // Track the property
+                    // Track the property - MLS Grid appears to have per-property rate limiting
+                    // Properties that consistently fail should get progressively longer cooldowns
                     if (rateLimitedListingKey) {
-                        const existing = apiRateLimitedProperties.get(rateLimitedListingKey) || { hitCount: 0, lastHit: new Date() };
+                        const existing = apiRateLimitedProperties.get(rateLimitedListingKey) || {
+                            hitCount: 0,
+                            lastHit: new Date(),
+                            consecutiveFails: 0
+                        };
                         existing.hitCount++;
+                        existing.consecutiveFails++;
                         existing.lastHit = new Date();
+                        
+                        // Check if this is a chronic offender (>= 5 consecutive fails)
+                        if (existing.consecutiveFails >= CONSECUTIVE_FAILS_BEFORE_PERMANENT_SKIP) {
+                            console.log(`[API Rate Limit] ⚠️ Property ${rateLimitedListingKey} has ${existing.consecutiveFails} consecutive 429s - skipping for 7 days`);
+                        }
+                        
                         apiRateLimitedProperties.set(rateLimitedListingKey, existing);
                     }
                 } else {
