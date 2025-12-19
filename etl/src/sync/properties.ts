@@ -5,6 +5,7 @@ import pool, {
     ORIGINATING_SYSTEM,
     getHighWaterMark,
     setHighWaterMark,
+    updateLastRun,
     upsertProperty,
     upsertRooms,
     upsertUnitTypes,
@@ -127,6 +128,11 @@ export async function syncProperties(): Promise<void> {
         }
     }
 
+    // If no data was processed, still update last_run_at so dashboard shows sync ran
+    if (totalProcessed === 0) {
+        await updateLastRun('Property');
+    }
+
     console.log(`Sync complete. Processed ${totalProcessed} properties`);
 }
 
@@ -205,6 +211,9 @@ export async function syncDeletions(): Promise<void> {
     if (maxTimestamp && maxTimestamp !== highWater) {
         await setHighWaterMark('PropertyDeletions', maxTimestamp);
         console.log(`Updated deletion high-water mark to ${maxTimestamp}`);
+    } else {
+        // Always update last_run_at even if no new data was found
+        await updateLastRun('PropertyDeletions');
     }
 
     console.log(`Deletion sync complete. Removed ${totalDeleted} properties`);

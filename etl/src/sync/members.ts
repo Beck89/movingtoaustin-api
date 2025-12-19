@@ -1,7 +1,7 @@
 /**
  * Member sync operations for MLS Grid ETL
  */
-import pool, { ORIGINATING_SYSTEM, getHighWaterMark, setHighWaterMark } from '../db.js';
+import pool, { ORIGINATING_SYSTEM, getHighWaterMark, setHighWaterMark, updateLastRun } from '../db.js';
 import { fetchMLSData } from '../mls-client.js';
 
 const BATCH_SIZE = parseInt(process.env.ETL_BATCH_SIZE || '100', 10);
@@ -113,6 +113,9 @@ export async function syncMembers(): Promise<void> {
     if (maxTimestamp && maxTimestamp !== highWater) {
         await setHighWaterMark('Member', maxTimestamp);
         console.log(`Updated member high-water mark to ${maxTimestamp}`);
+    } else {
+        // Always update last_run_at even if no new data was found
+        await updateLastRun('Member');
     }
 
     console.log(`Member sync complete. Processed ${totalProcessed} members`);

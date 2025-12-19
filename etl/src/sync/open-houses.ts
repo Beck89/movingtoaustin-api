@@ -1,7 +1,7 @@
 /**
  * Open House sync operations for MLS Grid ETL
  */
-import pool, { ORIGINATING_SYSTEM, getHighWaterMark, setHighWaterMark } from '../db.js';
+import pool, { ORIGINATING_SYSTEM, getHighWaterMark, setHighWaterMark, updateLastRun } from '../db.js';
 import { fetchMLSData } from '../mls-client.js';
 
 const BATCH_SIZE = parseInt(process.env.ETL_BATCH_SIZE || '100', 10);
@@ -146,6 +146,10 @@ export async function syncOpenHouses(): Promise<void> {
     if (maxTimestamp && maxTimestamp !== highWater) {
         await setHighWaterMark('OpenHouse', maxTimestamp);
         console.log(`Updated open house high-water mark to ${maxTimestamp}`);
+    } else {
+        // Always update last_run_at even if no new data was found
+        // This ensures the dashboard shows when sync actually ran
+        await updateLastRun('OpenHouse');
     }
 
     console.log(`Open house sync complete. Processed ${totalProcessed} open houses`);

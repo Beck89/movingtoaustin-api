@@ -47,9 +47,20 @@ export async function setHighWaterMark(resource: string, timestamp: string): Pro
     await pool.query(
         `INSERT INTO mls.sync_state (resource, originating_system_name, last_modification_ts, last_run_at)
          VALUES ($1, $2, $3, NOW())
-         ON CONFLICT (resource) 
+         ON CONFLICT (resource)
          DO UPDATE SET last_modification_ts = $3, last_run_at = NOW()`,
         [resource, ORIGINATING_SYSTEM, timestamp]
+    );
+}
+
+/**
+ * Update last_run_at timestamp for a resource (even if no new data)
+ * This ensures the dashboard shows when sync actually ran, not when data was last modified
+ */
+export async function updateLastRun(resource: string): Promise<void> {
+    await pool.query(
+        `UPDATE mls.sync_state SET last_run_at = NOW() WHERE resource = $1`,
+        [resource]
     );
 }
 
