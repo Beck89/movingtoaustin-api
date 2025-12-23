@@ -621,12 +621,14 @@ router.get('/', async (req: Request, res: Response) => {
 
             console.log(`[Address Lookup] Searching for address: "${addressSearch}", city: "${citySearch}"`);
 
-            // Search by address and city (case-insensitive, handles multiple spaces)
-            // Using REGEXP_REPLACE to normalize multiple spaces to single space
+            // Search by address and city (case-insensitive)
+            // We strip all non-alphanumeric characters and normalize spaces for comparison
+            // This handles variations like "210 Lavaca St #2203" vs "210 lavaca st 2203"
             propertyResult = await pool.query(
                 `SELECT * FROM mls.properties
                  WHERE mlg_can_view = true
-                 AND LOWER(TRIM(REGEXP_REPLACE(address_full, '\\s+', ' ', 'g'))) = LOWER(TRIM(REGEXP_REPLACE($1, '\\s+', ' ', 'g')))
+                 AND LOWER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE(address_full, '[^a-zA-Z0-9\\s]', '', 'g'), '\\s+', ' ', 'g'))) =
+                     LOWER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE($1, '[^a-zA-Z0-9\\s]', '', 'g'), '\\s+', ' ', 'g')))
                  AND LOWER(TRIM(city)) = LOWER(TRIM($2))
                  LIMIT 1`,
                 [addressSearch, citySearch]
