@@ -237,6 +237,12 @@ interface ListingDetailResponse {
     listing: CleanListing;
 }
 
+interface BatchListingResponse {
+    listings: CleanListing[];
+    found: string[];
+    not_found: string[];
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -545,8 +551,179 @@ function transformToCleanStructure(
 }
 
 // ============================================================================
-// Route Handler
+// Route Handlers
 // ============================================================================
+
+/**
+ * @swagger
+ * /api/listings/batch:
+ *   get:
+ *     summary: Get multiple property details by listing IDs
+ *     description: Retrieve complete property details for multiple listings in a single request. Returns all found listings along with lists of found and not found IDs.
+ *     tags: [Listings]
+ *     parameters:
+ *       - in: query
+ *         name: ids
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Comma-separated list of listing keys (e.g., ACT118922373,ACT118922374,ACT118922375)
+ *         example: "ACT118922373,ACT118922374,ACT118922375"
+ *     responses:
+ *       200:
+ *         description: Batch property details retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 listings:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/ListingDetailV2'
+ *                 found:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: List of listing IDs that were found
+ *                 not_found:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: List of listing IDs that were not found
+ *       400:
+ *         description: Invalid parameters - must provide ids query parameter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Failed to fetch listing details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/batch', async (req: Request, res: Response) => {
+    try {
+        const { ids } = req.query;
+
+        if (!ids || typeof ids !== 'string') {
+            return res.status(400).json({
+                error: 'Invalid parameters. Must provide ids query parameter with comma-separated listing IDs.'
+            });
+        }
+
+        // Parse comma-separated IDs and trim whitespace
+        const listingIds = ids.split(',').map(id => id.trim()).filter(id => id.length > 0);
+
+        if (listingIds.length === 0) {
+            return res.status(400).json({
+                error: 'No valid listing IDs provided.'
+            });
+        }
+
+        // Limit batch size to prevent abuse
+        const MAX_BATCH_SIZE = 50;
+        if (listingIds.length > MAX_BATCH_SIZE) {
+            return res.status(400).json({
+                error: `Batch size exceeds maximum of ${MAX_BATCH_SIZE} listings.`
+            });
+        }
+
+        // Query all properties at once
+        const propertyResult = await pool.query(
+            `SELECT * FROM mls.properties WHERE listing_key = ANY($1) AND mlg_can_view = true`,
+            [listingIds]
+        );
+
+        // Track which IDs were found
+        const foundIds = new Set(propertyResult.rows.map((p: any) => p.listing_key));
+        const notFoundIds = listingIds.filter(id => !foundIds.has(id));
+
+        // Get all listing keys for batch queries
+        const foundListingKeys = propertyResult.rows.map((p: any) => p.listing_key);
+
+        // Batch query for media
+        const mediaResult = await pool.query(
+            `SELECT listing_key, media_key, media_category, order_sequence, local_url, media_url,
+              caption, width, height
+       FROM mls.media
+       WHERE listing_key = ANY($1)
+       ORDER BY listing_key, order_sequence ASC`,
+            [foundListingKeys]
+        );
+
+        // Batch query for rooms
+        const roomsResult = await pool.query(
+            `SELECT listing_key, room_type, room_level, room_length, room_width
+       FROM mls.rooms
+       WHERE listing_key = ANY($1)`,
+            [foundListingKeys]
+        );
+
+        // Batch query for open houses (future only)
+        const openHousesResult = await pool.query(
+            `SELECT listing_key, start_time, end_time, remarks
+       FROM mls.open_houses
+       WHERE listing_key = ANY($1)
+       AND end_time > NOW()
+       ORDER BY listing_key, start_time ASC`,
+            [foundListingKeys]
+        );
+
+        // Group media, rooms, and open houses by listing_key
+        const mediaByListing = new Map<string, any[]>();
+        const roomsByListing = new Map<string, any[]>();
+        const openHousesByListing = new Map<string, any[]>();
+
+        for (const media of mediaResult.rows) {
+            const key = media.listing_key;
+            if (!mediaByListing.has(key)) {
+                mediaByListing.set(key, []);
+            }
+            mediaByListing.get(key)!.push(media);
+        }
+
+        for (const room of roomsResult.rows) {
+            const key = room.listing_key;
+            if (!roomsByListing.has(key)) {
+                roomsByListing.set(key, []);
+            }
+            roomsByListing.get(key)!.push(room);
+        }
+
+        for (const openHouse of openHousesResult.rows) {
+            const key = openHouse.listing_key;
+            if (!openHousesByListing.has(key)) {
+                openHousesByListing.set(key, []);
+            }
+            openHousesByListing.get(key)!.push(openHouse);
+        }
+
+        // Transform each property to clean structure
+        const listings: CleanListing[] = propertyResult.rows.map((property: any) => {
+            const listingKey = property.listing_key;
+            return transformToCleanStructure(
+                property,
+                mediaByListing.get(listingKey) || [],
+                roomsByListing.get(listingKey) || [],
+                openHousesByListing.get(listingKey) || []
+            );
+        });
+
+        const response: BatchListingResponse = {
+            listings,
+            found: Array.from(foundIds),
+            not_found: notFoundIds
+        };
+
+        res.json(response);
+    } catch (error) {
+        console.error('Batch detail error:', error);
+        res.status(500).json({ error: 'Failed to fetch batch listing details' });
+    }
+});
 
 /**
  * @swagger
