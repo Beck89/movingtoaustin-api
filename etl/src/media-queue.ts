@@ -225,7 +225,15 @@ export async function queueMediaDownloads(
         }
     }
 
-    for (const item of media) {
+    // Sort media to prioritize primary photo (order 0) first
+    // This ensures the featured image is available as quickly as possible
+    const sortedMedia = [...media].sort((a, b) => {
+        const orderA = a.Order ?? 999;
+        const orderB = b.Order ?? 999;
+        return orderA - orderB;
+    });
+    
+    for (const item of sortedMedia) {
         // Skip videos
         const isVideo = item.MediaCategory === 'Video' ||
             (item.MediaURL && /\.(mp4|mov|avi|wmv|flv|webm)$/i.test(item.MediaURL));

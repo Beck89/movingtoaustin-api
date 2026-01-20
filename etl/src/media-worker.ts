@@ -197,12 +197,21 @@ export async function runMediaDownloadWorker(): Promise<void> {
             }
 
             // Find a single property with missing media
+            // Prioritize properties missing their primary photo (order_sequence = 0) first
+            // This ensures featured images are available as quickly as possible
             const result = await pool.query(`
                 SELECT p.listing_key,
-                       (SELECT COUNT(*) FROM mls.media m 
-                        WHERE m.listing_key = p.listing_key 
-                        AND m.local_url IS NULL 
-                        AND (m.media_category IS NULL OR m.media_category != 'Video')) as missing_count
+                       (SELECT COUNT(*) FROM mls.media m
+                        WHERE m.listing_key = p.listing_key
+                        AND m.local_url IS NULL
+                        AND (m.media_category IS NULL OR m.media_category != 'Video')) as missing_count,
+                       EXISTS (
+                         SELECT 1 FROM mls.media m
+                         WHERE m.listing_key = p.listing_key
+                           AND m.local_url IS NULL
+                           AND m.order_sequence = 0
+                           AND (m.media_category IS NULL OR m.media_category != 'Video')
+                       ) as missing_primary
                 FROM mls.properties p
                 WHERE p.photo_count > 0
                   AND EXISTS (
@@ -211,7 +220,17 @@ export async function runMediaDownloadWorker(): Promise<void> {
                       AND m.local_url IS NULL
                       AND (m.media_category IS NULL OR m.media_category != 'Video')
                   )
-                ORDER BY p.modification_timestamp DESC
+                ORDER BY
+                  -- Prioritize properties missing their primary photo
+                  CASE WHEN EXISTS (
+                    SELECT 1 FROM mls.media m
+                    WHERE m.listing_key = p.listing_key
+                      AND m.local_url IS NULL
+                      AND m.order_sequence = 0
+                      AND (m.media_category IS NULL OR m.media_category != 'Video')
+                  ) THEN 0 ELSE 1 END,
+                  -- Then by most recently modified
+                  p.modification_timestamp DESC
                 LIMIT 1
             `);
 
@@ -226,12 +245,12 @@ export async function runMediaDownloadWorker(): Promise<void> {
             
             // Check if this property should be skipped due to rate limits
             if (shouldSkipPropertyDueToRateLimit(currentListingKey)) {
-                // Find an alternate property
+                // Find an alternate property - prioritize those missing primary photo
                 const alternateResult = await pool.query(`
                     SELECT p.listing_key,
-                           (SELECT COUNT(*) FROM mls.media m 
-                            WHERE m.listing_key = p.listing_key 
-                            AND m.local_url IS NULL 
+                           (SELECT COUNT(*) FROM mls.media m
+                            WHERE m.listing_key = p.listing_key
+                            AND m.local_url IS NULL
                             AND (m.media_category IS NULL OR m.media_category != 'Video')) as missing_count
                     FROM mls.properties p
                     WHERE p.photo_count > 0
@@ -242,7 +261,17 @@ export async function runMediaDownloadWorker(): Promise<void> {
                           AND m.local_url IS NULL
                           AND (m.media_category IS NULL OR m.media_category != 'Video')
                       )
-                    ORDER BY p.modification_timestamp DESC
+                    ORDER BY
+                      -- Prioritize properties missing their primary photo
+                      CASE WHEN EXISTS (
+                        SELECT 1 FROM mls.media m
+                        WHERE m.listing_key = p.listing_key
+                          AND m.local_url IS NULL
+                          AND m.order_sequence = 0
+                          AND (m.media_category IS NULL OR m.media_category != 'Video')
+                      ) THEN 0 ELSE 1 END,
+                      -- Then by most recently modified
+                      p.modification_timestamp DESC
                     LIMIT 10
                 `, [currentListingKey]);
                 
@@ -301,7 +330,15 @@ export async function runMediaDownloadWorker(): Promise<void> {
                 let downloadedCount = 0;
                 let skippedCount = 0;
                 
-                for (const item of data.Media) {
+                // Sort media to prioritize primary photo (order 0) first
+                // This ensures the featured image is available as quickly as possible
+                const sortedMedia = [...data.Media].sort((a: Media, b: Media) => {
+                    const orderA = a.Order ?? 999;
+                    const orderB = b.Order ?? 999;
+                    return orderA - orderB;
+                });
+                
+                for (const item of sortedMedia) {
                     if (isInRateLimitCooldown()) break;
                     
                     // Check if already downloaded
