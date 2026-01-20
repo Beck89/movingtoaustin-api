@@ -10,6 +10,7 @@ import listingsSearchRouter from './routes/listings-search.js';
 import detailV2Router from './routes/listing-detail-v2.js';
 import suggestRouter from './routes/suggest.js';
 import statusRouter from './routes/status.js';
+import statsRouter from './routes/stats.js';
 
 dotenv.config();
 
@@ -56,6 +57,7 @@ app.use('/api/listings', detailV2Router); // Detail endpoint with clean structur
 app.use('/listings/search', searchRouter); // Legacy search endpoint (keep for backward compatibility)
 app.use('/suggest', suggestRouter);
 app.use('/status', statusRouter);
+app.use('/api/stats', statsRouter);
 
 // Error handler
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
