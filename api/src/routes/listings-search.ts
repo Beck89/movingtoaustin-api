@@ -32,6 +32,7 @@ interface SearchQuery {
     max_latitude?: string;
     min_longitude?: string;
     max_longitude?: string;
+    city?: string;
 
     // Property Characteristics
     property_type?: string;        // MLS PropertyType field (Residential, Residential Lease, Land, etc.)
@@ -130,6 +131,13 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
         conditions.push(`p.geog && ST_MakeEnvelope($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, 4326)::geography`);
         params.push(minLng, minLat, maxLng, maxLat);
         paramIndex += 4;
+    }
+
+    // City filter (case-insensitive)
+    if (query.city) {
+        conditions.push(`LOWER(p.city) = LOWER($${paramIndex})`);
+        params.push(query.city.trim());
+        paramIndex++;
     }
 
     // Property type filter (exact MLS PropertyType values)
@@ -451,6 +459,12 @@ function buildWhereConditions(query: SearchQuery, _pool: Pool): { conditions: st
  *         schema:
  *           type: number
  *         description: Maximum longitude for bounding box
+ *       - in: query
+ *         name: city
+ *         schema:
+ *           type: string
+ *         description: Filter by city name (case-insensitive exact match)
+ *         example: "Austin"
  *
  *       # Property Characteristics
  *       - in: query
